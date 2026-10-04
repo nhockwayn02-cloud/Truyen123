@@ -7,6 +7,7 @@ const dir = __dirname; const suites = [
   ["Nhân vật trùng", process.execPath, ["characters.test.js"]],
   ["Unit worker", process.execPath, ["worker.test.js"]],
   ["V12.20 từ lỗi/câu cụt/bám gợi ý", process.execPath, ["v12_20.test.js"]],
+  ["V12.22b chống chương viết lặp (diễn đạt khác)", process.execPath, ["v12_22b.test.js"]],
   ["Định tuyến 18+", process.execPath, ["worker.routing.js"]],
   ["Bảo mật server", process.execPath, ["security.test.js"]],
   ["Tích hợp worker", process.execPath, ["worker.integration.js"], { EXTRACT_CONCURRENCY: "3" }],

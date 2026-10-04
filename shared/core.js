@@ -223,11 +223,71 @@ function _sim(a, b) {
   let inter = 0; for (const g of a) if (b.has(g)) inter++;
   return inter / Math.min(a.size, b.size);
 }
+// ===== V12.22b: chống "viết lại cả chương từ đầu rồi dán nối" (kể cả khi bản 2 chỉ diễn đạt lại, không trùng nguyên văn) =====
+// Nhãn "TIÊU ĐỀ: ... / NỘI DUNG:" nằm GIỮA văn bản (kể cả dính liền câu trước, không xuống dòng) = model xuất lại cả chương.
+const _LABEL_RE = /\*{0,2}\b(?:TIÊU ĐỀ|TITLE)\s*:\s*\*{0,2}[^\n]{0,160}\n+\s*\*{0,2}NỘI DUNG\s*:\*{0,2}[ \t]*|(?:^|\n)[ \t]*\*{0,2}NỘI DUNG\s*:\*{0,2}[ \t]*/gi;
+function splitByInnerLabels(text) {
+  const src = String(text || ""); const parts = []; let last = 0, m;
+  _LABEL_RE.lastIndex = 0;
+  while ((m = _LABEL_RE.exec(src))) { parts.push(src.slice(last, m.index)); last = m.index + m[0].length; }
+  parts.push(src.slice(last));
+  return parts.map(x => x.trim()).filter(x => x.length > 0);
+}
+// Hồ sơ từ NỘI DUNG của từng đoạn: bỏ từ quá phổ biến trong chương (cô, hắn, của, váy...) để so khớp theo từ đặc trưng.
+function _paraProfiles(paras) {
+  const words = paras.map(p => _normWords(p)), df = new Map();
+  words.forEach(ws => new Set(ws).forEach(w => df.set(w, (df.get(w) || 0) + 1)));
+  const lim = Math.max(3, Math.ceil(paras.length * 0.2));
+  return words.map(ws => new Set(ws.filter(w => w.length >= 2 && (df.get(w) || 0) <= lim)));
+}
+function _setSim(a, b) {
+  if (a.size < 5 || b.size < 5) return 0;
+  let n = 0; for (const w of a) if (b.has(w)) n++;
+  return n / Math.min(a.size, b.size);
+}
+// Tìm đoạn bắt đầu của "bản viết lại": từ đó trở đi các đoạn lần lượt khớp (diễn đạt lại hoặc y nguyên) với các đoạn phía trước
+// THEO ĐÚNG THỨ TỰ (đường chéo: đoạn i+k khớp đoạn j+k, lệch tối đa ±2 do tách/gộp đoạn). Trả -1 nếu không có.
+// minStart: chỉ xét từ đoạn này trở đi (phía trước đó là bản gốc/đã có).
+function _findRestartIndex(paras, minStart, thr, win) {
+  thr = thr || 0.5; win = win || 6;
+  const n = paras.length; if (n < minStart + 3) return -1;
+  const prof = _paraProfiles(paras);
+  const START = Math.min(0.35, thr), HIT = Math.min(0.28, thr);
+  const walk = (i, j0, limit) => {          // đi dọc đường chéo từ (i, j0), trả {q, hit}
+    let q = 0, hit = 0, j = j0;
+    for (let k = i; k < Math.min(n, limit); k++, j++) {
+      if (prof[k].size < 5) continue; q++;
+      let bs = 0, bj = j;
+      for (let jj = Math.max(0, j - 2); jj <= j + 2 && jj < k - 2; jj++) { const v = _setSim(prof[k], prof[jj]); if (v > bs) { bs = v; bj = jj; } }
+      if (bs >= HIT) { hit++; j = bj; }
+    }
+    return { q, hit };
+  };
+  for (let i = Math.max(3, minStart); i < n - 2; i++) {
+    if (prof[i].size < 5) continue;
+    const cands = [];
+    for (let j = 0; j < i - 3; j++) { const v = _setSim(prof[i], prof[j]); if (v >= START) cands.push([v, j]); }
+    cands.sort((x, y) => y[0] - x[0]);
+    for (const [, j0] of cands.slice(0, 3)) {
+      const w = walk(i, j0, i + Math.max(win, 8));
+      if (w.hit < 3 || w.hit / Math.max(1, w.q) < 0.6) continue;
+      const all = walk(i, j0, n);
+      if (all.hit / Math.max(1, all.q) < 0.5) continue;
+      // lùi ngược: đoạn mở đầu của bản viết lại thường diễn đạt lại nhiều hơn nên điểm khớp thấp hơn (>=0.2), vẫn phải đúng thứ tự
+      let cut = i, ref = j0;
+      for (let step = 0; step < 6 && cut - 1 >= Math.max(3, minStart) && ref > 0; step++) {
+        const a = prof[cut - 1]; if (a.size < 5) { cut--; continue; }
+        let bs = 0, bj = -1; for (let jj = Math.max(0, ref - 3); jj < ref; jj++) { const v = _setSim(a, prof[jj]); if (v > bs) { bs = v; bj = jj; } }
+        if (bs >= 0.2 && bj >= 0) { cut--; ref = bj; } else break;
+      }
+      return cut;
+    }
+  }
+  return -1;
+}
 // Nếu văn bản có một "bản viết lại" của phần đầu (model chép lại từ đầu), cắt bỏ từ chỗ lặp trở đi.
 // Trả về text gốc nếu không phát hiện gì. Chấp nhận cả trường hợp 2 bản dính liền không có dòng trống.
-function dedupeRepeatedScene(text) {
-  const src = String(text || "");
-  if (src.length < 1500) return src;
+function _dedupeByGrams(src) {
   const sep = src.replace(/(\p{Ll}[.!?…”"])(\p{Lu}\p{Ll})/gu, "$1\n\n$2");
   const paras = sep.split(/\n\s*\n+|\n/).map(p => p.trim()).filter(Boolean);
   const info = paras.map(p => { const w = _normWords(p); return { p, n: w.length, g: _grams(w, 3) }; });
@@ -249,10 +309,47 @@ function dedupeRepeatedScene(text) {
   }
   return src;
 }
+function _splitParas(t) { return String(t || "").replace(/(\p{Ll}[.!?…”"])(\p{Lu}\p{Ll})/gu, "$1\n\n$2").split(/\n\s*\n+|\n/).map(p => p.trim()).filter(Boolean); }
+function dedupeRepeatedScene(text) {
+  const raw = String(text || "");
+  if (raw.length < 1500) return raw;
+  // (1) Có nhãn TIÊU ĐỀ/NỘI DUNG giữa văn bản -> model xuất lại cả chương: tách các bản, giữ bản tốt nhất, bỏ bản lặp.
+  const segs = splitByInnerLabels(raw);
+  let src = raw;
+  if (segs.length > 1) {
+    let keep = segs[0];
+    for (let k = 1; k < segs.length; k++) {
+      const sg = segs[k], pk = _splitParas(keep), ps = _splitParas(sg);
+      const idx = _findRestartIndex(pk.concat(ps), pk.length, 0.4, 5);
+      const prof = _paraProfiles(pk.concat(ps));
+      let q = 0, hit = 0;
+      for (let i = pk.length; i < pk.length + ps.length; i++) { if (prof[i].size < 5) continue; q++; let ok = false; for (let j = 0; j < pk.length && !ok; j++) if (_setSim(prof[i], prof[j]) >= 0.4) ok = true; if (ok) hit++; }
+      const isDup = idx >= 0 || (q >= 3 && hit / q >= 0.4) || countWords(sg) < 40;
+      if (isDup) {
+        // chọn bản đầy đủ hơn: bản sau chỉ thắng khi bản đầu bị cụt còn bản sau kết gọn và không ngắn hơn đáng kể
+        if (!endsCleanly(keep) && endsCleanly(sg) && countWords(sg) >= countWords(keep) * 0.8) keep = sg;
+      } else keep = keep.replace(/\s+$/, "") + "\n\n" + sg;   // không phải bản lặp (nhãn thừa): chỉ bỏ nhãn, giữ cả hai phần
+    }
+    src = keep;
+  }
+  // (2) Trùng gần nguyên văn với đoạn mở đầu
+  const g = _dedupeByGrams(src);
+  if (g.length < src.length) return g;
+  // (3) Bản viết lại chỉ DIỄN ĐẠT LẠI (khác câu chữ nhưng cùng diễn biến), dính liền hoặc cách dòng
+  const paras = _splitParas(src);
+  const cut = _findRestartIndex(paras, 3, 0.5, 6);
+  if (cut > 0) {
+    const head = paras.slice(0, cut).join("\n\n"), tail = paras.slice(cut).join("\n\n");
+    return (!endsCleanly(head) && endsCleanly(tail) && countWords(tail) >= countWords(head) * 0.8) ? tail : head;
+  }
+  return src.length < raw.length ? src : raw;
+}
 // Với lượt viết tiếp: bỏ các đoạn mở đầu lặp lại nội dung đã có. Trả "" nếu toàn bộ là lặp.
 function dropRestartedContinuation(baseText, contText) {
-  const base = String(baseText || ""), cont = String(contText || "").trim();
+  const base = String(baseText || ""); let cont = String(contText || "").trim();
   if (!cont) return cont;
+  // V12.22b: bản viết tiếp mở đầu bằng nhãn TIÊU ĐỀ/NỘI DUNG = model viết lại cả chương -> bỏ nhãn rồi để các bước dưới lọc phần lặp.
+  const sg = splitByInnerLabels(cont); if (sg.length) cont = sg.join("\n\n");
   const baseG = _grams(_normWords(base), 3);
   const paras = cont.split(/\n\s*\n+|\n/).map(p => p.trim()).filter(Boolean);
   let cut = paras.length;
@@ -260,7 +357,16 @@ function dropRestartedContinuation(baseText, contText) {
     const w = _normWords(paras[i]); if (w.length < 15) continue;
     if (_sim(_grams(w, 3), baseG) >= 0.7) { cut = i; break; }
   }
-  return paras.slice(0, cut).join("\n\n");
+  let out = paras.slice(0, cut);
+  // V12.22b: phần viết tiếp diễn đạt lại nội dung đã có (không trùng nguyên văn) -> cắt từ chỗ lặp
+  if (out.length >= 3) {
+    const bp = _splitParas(base);
+    if (bp.length >= 3) {
+      const all = bp.concat(out), r = _findRestartIndex(all, bp.length, 0.5, 4);
+      if (r >= bp.length) out = out.slice(0, r - bp.length);
+    }
+  }
+  return out.join("\n\n");
 }
 const _VN_OK = new Set(["sedan","neon","email","wifi","online","offline","game","app","video","office","laptop","zalo","facebook","youtube","internet","tiktok","inbox","mail","file","link","logo","menu","poster","taxi","radio","karaoke","video","casino","hotel","studio","check","deadline","ceo","kpi","vip","boss","sexy","show","team","sale","sales","manager","ipad","iphone","macbook","google","zoom","slack","excel","word","pdf","silicon","latex","titan","inox","laser","camera","remote","vibrator","plug","cuff","temp","lock","sexy","porn","sms","wifi","bluetooth","smartphone","selfie","livestream","hashtag","comment","story","stress","stalker","vest","blazer","jacket","cardigan","sandal","jeans","shorts","bikini","lingerie","corset","sofa","mascara","vecni","lipstick","gloss","lotion","serum","shampoo","parfum","spa","massage","gym","yoga","pilates","sandwich","burger","pizza","coffee","latte","cappuccino","cocktail","whisky","vodka","chanel","dior","gucci","prada","hermes","versace","nike","adidas","lelo","durex","kindle","netflix","spotify","messenger","instagram","iphone","android","samsung","alô","alo","hello","okay","bye","café","cafe","bar","pub","resort","menu","blouse","boxer","ballet","salon","shop","box","stylist","designer","leader","model","manager","outfit","style","cocktail"]);
 const _VN_SYL = /^(ngh|ng|nh|kh|gh|gi|ph|qu|th|tr|ch|[bcdghklmnpqrstvx])?[aeiouy]{1,3}(ng|nh|ch|[cmnpt])?$/;
