@@ -5,7 +5,7 @@ const mod = { exports: {} };
 const sandbox = { module: mod, exports: mod.exports, console, process, Buffer, setTimeout, clearTimeout, URL, AbortController, TextDecoder, TextEncoder,
   require: (n) => (n === "@netlify/blobs" ? { getStore() {}, connectLambda() {} } : require(n)), fetch: async () => { throw new Error("network disabled"); } };
 vm.createContext(sandbox);
-vm.runInContext(src + "\n;module.exports.__t={findStrayWords,locateWordSentences,acceptWordFix,endsCleanly,trimToLastSentence,extractClosingBeat,trimToWordLimit,generateOneChapter};", sandbox);
+vm.runInContext(src + "\n;module.exports.__t={findStrayWords,locateWordSentences,acceptWordFix,endsCleanly,trimToLastSentence,extractClosingBeat,trimToWordLimit,generateOneChapter,chapterWordLimits};", sandbox);
 const T = mod.exports.__t;
 let pass = 0, fail = 0; const pending = [];
 function t(name, fn) { const ok = () => { console.log("PASS " + name); pass++; }, bad = e => { console.log("FAIL " + name + " — " + e.message); fail++; };
@@ -50,44 +50,57 @@ function job(extra) { return { apiEndpoint: "x", apiKey: "k", model: "m", storyS
   const c1 = await T.generateOneChapter(job({ nextChapterHint: "Cô vào phòng, mở tủ.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
   t("Có gợi ý + model tự dừng → KHÔNG tự viết tiếp để đủ số từ", () => {
     assert(!calls.some(p => /Viết TIẾP chương/.test(p)), "không được có lượt viết tiếp");
-    assert(calls.filter(p => !/MỞ RỘNG ĐOẠN/.test(p)).length === 1, "chỉ 1 lượt viết chính");
+    assert(calls.filter(p => !/CHÈN THÊM DIỄN BIẾN/.test(p)).length === 1, "chỉ 1 lượt viết chính");
     assert(/CÚ CHỐT BẮT BUỘC/.test(calls[0]) && /tắt đèn/.test(calls[0]), "prompt phải khóa cú chốt ở cuối");
   });
-  // Có gợi ý + chương ngắn: MỞ RỘNG TẠI CHỖ, giữ nguyên đoạn kết
+  // V12.22: ĐÃ BỎ "chia đoạn làm dày". Có gợi ý + chương ngắn -> CHÈN diễn biến vào TRƯỚC đoạn kết, Ending Anchor giữ nguyên ở cuối.
+  let _u = 0; const pw = (n) => { let x = ""; n = n + 1000; while (n > 0) { x += "bcdglmnpqrstvx"[n % 14] + "ảẹồưếịơ"[Math.floor(n / 14) % 7]; n = Math.floor(n / 70); } return x; };
+  const uniq = (w) => { const out = []; let cnt = 0; while (cnt < w) { const sent = []; for (let i = 0; i < 12; i++) { sent.push(pw(++_u)); } out.push("Cô " + sent.join(" ") + "."); cnt += 13; } return out.join(" "); };
+  const mk = (n, w) => Array.from({ length: n }, () => uniq(w)).join("\n\n");
+  const ANCHOR = "Cô viết dòng chữ nhỏ rồi tắt đèn.";
+  const hint = "Cô vào phòng.\nEnding Anchor: cô viết dòng chữ rồi tắt đèn.";
   calls = [];
-  const base = para(150).split(". ");
-  const orig = base.join(". ") + "\n\nCô viết dòng chữ nhỏ rồi tắt đèn.";
+  const shortOrig = mk(6, 60) + "\n\n" + ANCHOR;
   sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content; calls.push(p);
-    if (/MỞ RỘNG ĐOẠN/.test(p)) { const src = p.split("===== ĐOẠN GỐC CẦN MỞ RỘNG =====")[1].split("===== HẾT ĐOẠN GỐC")[0].trim(); return { text: src.replace(/\. /g, ". Ánh đèn hắt lên tường, hơi lạnh phả vào gáy cô. "), finishReason: "stop" }; }
-    return { text: orig, finishReason: "stop" }; };
-  const cx = await T.generateOneChapter(job({ nextChapterHint: "Cô vào phòng.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
-  t("Có gợi ý + chương ngắn → mở rộng tại chỗ, đoạn kết giữ nguyên, không viết nối", () => {
-    assert(calls.some(p => /MỞ RỘNG ĐOẠN/.test(p)), "phải có lượt mở rộng");
-    assert(!calls.some(p => /Viết TIẾP chương/.test(p)));
-    assert(cx.wordCount > 300, "dài hơn bản gốc: " + cx.wordCount);
-    assert(/Cô viết dòng chữ nhỏ rồi tắt đèn\.$/.test(cx.text));
-    assert(cx.autoUpdateIssues.some(x => /Đã mở rộng chương/.test(x)));
+    if (/CHÈN THÊM DIỄN BIẾN/.test(p)) return { text: mk(3, 100) + " Gió lùa qua khe cửa.", finishReason: "stop" };
+    return { text: shortOrig, finishReason: "stop" }; };
+  const cx = await T.generateOneChapter(job({ nextChapterHint: hint }));
+  t("Có gợi ý + chương ngắn → chèn thêm diễn biến trước đoạn kết, Ending Anchor vẫn ở cuối", () => {
+    assert(calls.some(p => /CHÈN THÊM DIỄN BIẾN/.test(p)), "phải có lượt chèn");
+    assert(!calls.some(p => /MỞ RỘNG ĐOẠN/.test(p)), "không còn bước mở rộng theo khối");
+    assert(!calls.some(p => /Viết TIẾP chương/.test(p)), "không viết nối sau anchor");
+    assert(cx.wordCount > 600, "dài hơn bản gốc: " + cx.wordCount);
+    assert(cx.text.endsWith(ANCHOR), "anchor phải là câu cuối");
+    assert(cx.text.split(ANCHOR).length === 2, "anchor chỉ xuất hiện một lần");
+    assert(cx.autoUpdateIssues.some(x => /Đã chèn thêm/.test(x)));
+    assert(calls.find(p => /CHÈN THÊM DIỄN BIẾN/.test(p)).includes("tắt đèn"), "prompt chèn phải mang Ending Anchor");
   });
-  // Chương dài 2867 từ, mục tiêu 4500: mở rộng theo nhiều đoạn, ra gần mục tiêu, giữ cú chốt
-  const big = para(2860) + "\n\nCô viết dòng chữ nhỏ rồi tắt đèn."; const bigParas = [];
-  { const ss = big.split(". "); for (let i = 0; i < ss.length; i += 6) bigParas.push(ss.slice(i, i + 6).join(". ")); }
-  const bigText = bigParas.join("\n\n"); let chunkCalls = 0;
+  // Chương 2867 từ, mục tiêu 4500: chèn tối đa 2 lượt, đạt >=95% mục tiêu, không vượt hardMax, anchor ở cuối
+  let insCalls = 0;
+  const bigOrig = mk(40, 70) + "\n\n" + ANCHOR;
   sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content;
-    if (/MỞ RỘNG ĐOẠN/.test(p)) { chunkCalls++; const src = p.split("===== ĐOẠN GỐC CẦN MỞ RỘNG =====")[1].split("===== HẾT ĐOẠN GỐC")[0].trim(); const w = src.split(/\s+/).length; const tw = Number((p.match(/thành khoảng (\d+) từ/) || [])[1]); const filler = " Ánh đèn hắt lên tường, hơi lạnh phả vào gáy cô, tiếng bước chân vang khẽ."; let o = src; const ps = o.split("\n\n"); let k = 0; while (o.split(/\s+/).length < tw * 0.95) { const m = ps.length > 1 ? ps.length - 1 : 1; ps[k % m] = ps[k % m] + filler; o = ps.join("\n\n"); k++; if (k > 400) break; } return { text: o, finishReason: "stop" }; }
-    return { text: bigText, finishReason: "stop" }; };
-  const cb = await T.generateOneChapter(job({ minChapterWords: 4500, nextChapterHint: "Cô vào phòng.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
-  t("Chương 2867 từ, mục tiêu 4500 → mở rộng theo nhiều đoạn, đạt >=90% mục tiêu, giữ cú chốt", () => {
-    assert(chunkCalls >= 3, "phải chia nhiều đoạn: " + chunkCalls); // V12.21: khối ~900 từ nên 2867 từ -> 3 khối
-    assert(cb.wordCount >= 4050 && cb.wordCount <= 5175, "số từ: " + cb.wordCount);
-    assert(/tắt đèn\.$/.test(cb.text));
+    if (/CHÈN THÊM DIỄN BIẾN/.test(p)) { insCalls++; return { text: mk(10, 160) + " Cô hít sâu một hơi.", finishReason: "stop" }; }
+    return { text: bigOrig, finishReason: "stop" }; };
+  const cb = await T.generateOneChapter(job({ minChapterWords: 4500, nextChapterHint: hint }));
+  t("Chương ngắn so với mục tiêu 4500 → chèn ≤2 lượt, đạt >=95%, không vượt hardMax, giữ anchor", () => {
+    assert(insCalls >= 1 && insCalls <= 2, "số lượt chèn: " + insCalls);
+    assert(cb.wordCount >= 4275 && cb.wordCount <= T.chapterWordLimits({ minChapterWords: 4500 }).hardMax, "số từ: " + cb.wordCount);
+    assert(cb.text.endsWith(ANCHOR));
   });
-  // Mở rộng làm đổi đoạn kết -> bị từ chối, giữ bản gốc
+  // Phần chèn quá ngắn / lặp -> bị bỏ, bản gốc và anchor nguyên vẹn
   sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content;
-    if (/MỞ RỘNG ĐOẠN/.test(p)) return { text: para(500) + "\n\nSáng hôm sau một nhân vật lạ xuất hiện ở cổng và mọi chuyện bắt đầu một cuộc rượt đuổi mới.", finishReason: "stop" };
-    return { text: orig, finishReason: "stop" }; };
-  const cy = await T.generateOneChapter(job({ nextChapterHint: "Cô vào phòng.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
-  t("Mở rộng làm đổi đoạn kết (bịa thêm) → bị từ chối, giữ bản gốc", () => {
-    assert(/tắt đèn\.$/.test(cy.text)); assert(cy.autoUpdateIssues.some(x => /Mở rộng chương không đạt/.test(x)));
+    if (/CHÈN THÊM DIỄN BIẾN/.test(p)) return { text: uniq(20), finishReason: "stop" };
+    return { text: shortOrig, finishReason: "stop" }; };
+  const cy = await T.generateOneChapter(job({ nextChapterHint: hint }));
+  t("Phần chèn quá ngắn/lặp → bị bỏ, giữ nguyên bản gốc và Ending Anchor", () => {
+    assert(cy.text.endsWith(ANCHOR)); assert(cy.text === shortOrig.trim() || cy.text.split(/\s+/).length >= shortOrig.split(/\s+/).length - 2);
+    assert(cy.autoUpdateIssues.some(x => /quá ngắn|lặp lại/.test(x)));
+  });
+  t("extractClosingBeat nhận cả 'Ending Anchor'", () => {
+    assert(/tắt đèn/.test(T.extractClosingBeat("Cô vào phòng.\nEnding Anchor: cô viết dòng chữ rồi tắt đèn.")));
+  });
+  t("hardMax nới lên 1.4× mục tiêu (không cắt mất anchor khi AI viết dài hơn)", () => {
+    assert.strictEqual(T.chapterWordLimits({ minChapterWords: 5000 }).hardMax, 7000);
   });
   sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content; calls.push(p); return { text: para(150), finishReason: "stop" }; };
   // Không gợi ý: vẫn viết tiếp như cũ

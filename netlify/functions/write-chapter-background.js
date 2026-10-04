@@ -84,7 +84,7 @@ function chapterWordLimits(st) {
   // Client gọi không tham số (dùng state toàn cục); worker truyền state của job.
   if (!st && typeof state !== "undefined") st = state;
   const target = Math.min(Math.max(Number(st && st.minChapterWords) || 5000, 500), 6000);
-  return { target, hardMax: Math.ceil(target * 1.15) };
+  return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
 function trimToWordLimit(text, maxWords) {
@@ -435,7 +435,7 @@ function trimToLastSentence(text, minRatio) {
 // V12.20: lấy "cú chốt / kết chương" mà người dùng ghi trong gợi ý/mệnh lệnh (để nhắc AI dừng đúng chỗ và để khép chương khi bị cụt).
 function extractClosingBeat(text) {
   const src = String(text || ""); if (!src.trim()) return "";
-  const re = /(cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)/i;
+  const re = /(ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)/i;
   const lines = src.split(/\n+/).map(x => x.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) if (re.test(lines[i])) return lines[i].slice(0, 500);
   const sents = src.split(/(?<=[.!?…])\s+/);
@@ -537,7 +537,8 @@ function storyControlPrompt(st) {
     "- Không tạo năng lực, quy tắc thế giới hoặc vật phẩm quan trọng mới chỉ để giải quyết vấn đề tức thời.",
     "- Chapter Focus chỉ kiểm soát phạm vi chủ đề trưởng thành; không được dùng nó để mở rộng cốt truyện ngoài brief.",
     "- Nếu Directive/Story Bible/Current Status xung đột, không âm thầm sửa canon; ưu tiên dữ liệu canon và ghi nhận xung đột khi cần.",
-    "- Mục tiêu là chiều sâu và tính liên tục, không phải nhồi thêm sự kiện."
+    "- ĐƯỢC TỰ DO: thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, giác quan, hành động nhỏ, chi tiết đời thường BÊN TRONG các sự kiện chính; không được dùng quyền này để mở arc lớn, thêm nhân vật quan trọng mới hay tiết lộ thông tin để dành cho chương sau.",
+    "- Mục tiêu là chiều sâu và tính liên tục, không phải nhồi thêm biến cố lớn."
   ].filter(Boolean).join("\n");
 }
 
@@ -1049,7 +1050,7 @@ const SYSTEM_PROMPT = [
   "Giữ continuity: nhân vật, xưng hô, POV, thì kể, thời gian, địa điểm, kiến thức, quan hệ, vật phẩm, năng lực và nguyên nhân-hệ quả phải nhất quán.",
   "Ưu tiên cảnh cụ thể, hành động, giác quan, đối thoại tự nhiên và nội tâm thể hiện qua hành vi; tránh sáo ngữ, giải thích dài dòng, lặp cấu trúc câu và lặp tính từ.",
   "Không cố thay từ chỉ để tránh lặp khi việc lặp là tự nhiên. Tính tự nhiên của tiếng Việt quan trọng hơn việc né một từ.",
-  "Không tự tạo biến cố/lore/nhân vật chỉ để kéo dài số chữ.",
+  "ĐƯỢC TỰ DO thêm cảnh phụ, hội thoại, nội tâm, giác quan, chi tiết đời thường để chương tự nhiên và dài hơn; KHÔNG tự tạo biến cố lớn, lore, nhân vật quan trọng, arc mới hay thông tin để dành cho chương sau.",
   "CHARACTER DATABASE là nguồn sự thật: không tự đổi thân phận, vai trò, tính cách, quan hệ hoặc lịch sử đã được xác nhận; nếu chưa biết thì để mở thay vì bịa.",
   "Mệnh lệnh/gợi ý trực tiếp của người dùng cho chương hiện tại phải được triển khai đầy đủ; không thay thế bằng một tuyến truyện khác chỉ vì AI thấy tuyến đó thú vị hơn.",
   "Trước khi viết, phải lập kế hoạch nội bộ theo Story Control Layer: khóa canon, giới hạn 1–3 sự kiện, kiểm tra nhân vật và hậu quả; không xuất kế hoạch nội bộ ra văn bản.",
@@ -1437,82 +1438,6 @@ async function fixStrayWordsWithAI(job, text, allowNames, model, isNsfw) {
 }
 
 
-/* V12.20 — Mở rộng chương ngắn TẠI CHỖ, THEO TỪNG ĐOẠN: model không viết nổi 4500 từ trong một lần (thường dừng ~3000),
-   nên chia chương thành các khối ~550 từ, mỗi khối có chỉ tiêu từ riêng (gốc x hệ số) và được viết lại song song (3 khối/lượt).
-   Giữ nguyên sự kiện/thứ tự/cú chốt, chỉ làm dày miêu tả - nội tâm - thoại. Khối nào không dài hơn hoặc lệch nội dung thì giữ bản gốc. */
-async function expandChapterInPlace(job, text, o) {
-  const cur = countWords(text);
-  if (writeTimeLeft(o.isNsfw) < 120000) return { ok: false, reason: "hết thời gian job" };
-  const goal = Math.min(o.maxWords - 80, o.minWords);
-  const factor = Math.min(2.2, goal / Math.max(1, cur));
-  if (factor < 1.05) return { ok: false, reason: "đã đủ độ dài" };
-  const st = o.state || {};
-  const paras = String(text).split(/\n\s*\n/).map(x => x.trim()).filter(Boolean);
-  const nChunks = Math.max(1, Math.min(6, Math.round(cur / 900)));  // V12.21: khối ~900 từ (trước 550) để model đủ chỗ đào sâu
-  const per = cur / nChunks; const chunks = []; let bufP = [], bufW = 0;
-  paras.forEach((p, i) => {
-    bufP.push(p); bufW += countWords(p);
-    const left = paras.length - 1 - i;
-    if ((bufW >= per && chunks.length < nChunks - 1) || left === 0) { chunks.push({ text: bufP.join("\n\n"), words: bufW }); bufP = []; bufW = 0; }
-  });
-  const brief = (st.directive || st.nextChapterHint) ? ("KẾ HOẠCH CỦA NGƯỜI DÙNG (để đối chiếu, KHÔNG thêm ngoài kế hoạch):\n" + [st.directive, st.nextChapterHint].filter(Boolean).map(x => String(x).trim()).join("\n")) : "";
-  const lastPara = (t) => { const ps = String(t).split(/\n\s*\n|\n/).map(x => x.trim()).filter(Boolean); return ps[ps.length - 1] || ""; };
-  const overlap = (a, b) => { const A = new Set(_normWords(a)), B = new Set(_normWords(b)); if (!A.size || !B.size) return 1; let h = 0; A.forEach(w => { if (B.has(w)) h++; }); return h / Math.min(A.size, B.size); };
-  const doChunkOnce = async (i, retryNote) => {
-    const c = chunks[i], tw = Math.round(c.words * factor), isFirst = i === 0, isLast = i === chunks.length - 1;
-    const prompt = [
-      `MỞ RỘNG ĐOẠN ${i + 1}/${chunks.length} của một chương truyện. Đoạn gốc dưới đây có ${c.words} từ. Hãy viết lại thành khoảng ${tw} từ (BẮT BUỘC dài hơn ít nhất ${Math.round(c.words * Math.min(factor, 1.6) * 0.9)} từ; không vượt ${Math.round(tw * 1.25)} từ).`,
-      "CÁCH LÀM DÀI (áp dụng lần lượt cho TỪNG hành động/lời thoại gốc): (1) giác quan chậm và cụ thể — ánh sáng, âm thanh, mùi, xúc giác, nhiệt độ, nhịp thở; (2) nội tâm giằng co, mâu thuẫn giữa suy nghĩ và phản ứng cơ thể; (3) lặp có biến tấu — mỗi lần nhắc lại phải thêm một thông tin/cảm xúc/mức độ mới, không chép lại cấu trúc câu; (4) thoại có ngập ngừng, khoảng lặng, phản ứng nhỏ của người nghe; (5) chi tiết môi trường và vật dụng. Sống chậm từng khoảnh khắc, không tóm tắt, không nhảy thời gian; đoạn càng căng càng viết chậm. Xen câu dài với câu ngắn và thoại, đừng để mọi đoạn cùng một nhịp. Mỗi hành động/lời thoại gốc phải được GIỮ và khai triển, không bỏ.",
-      "CẤM: thêm sự kiện/biến cố/nhân vật/manh mối mới; thêm cảnh mới; tóm tắt; lặp ý cho đủ chữ; viết sang nội dung của đoạn trước/đoạn sau.",
-      isFirst ? "Đây là ĐOẠN ĐẦU chương: giữ đúng cách mở chương (địa điểm, thời điểm, người có mặt)." : "",
-      isLast ? ("Đây là ĐOẠN CUỐI chương: giữ nguyên câu/cảnh cuối làm điểm kết, KHÔNG viết thêm gì sau đó." + (o.closingBeat ? " Cú chốt: " + o.closingBeat : "") + " Câu cuối phải hoàn chỉnh, có dấu kết thúc.") : "",
-      "Giữ nguyên giọng văn, ngôi kể, thì, xưng hô. 100% tiếng Việt có dấu. Chỉ trả văn xuôi của đoạn đã mở rộng, không tiêu đề/ghi chú.",
-      retryNote || "",
-      brief,
-      i > 0 ? ("ĐOẠN TRƯỚC (chỉ để nối mạch, KHÔNG viết lại):\n..." + chunks[i - 1].text.slice(-500)) : "",
-      !isLast ? ("ĐOẠN SAU (chỉ để biết điều gì tới sau, KHÔNG viết):\n" + chunks[i + 1].text.slice(0, 350) + "...") : "",
-      "===== ĐOẠN GỐC CẦN MỞ RỘNG =====", c.text, "===== HẾT ĐOẠN GỐC ====="
-    ].filter(Boolean).join("\n\n");
-    try {
-      const r = await callWithRetry({ endpoint: job.apiEndpoint, apiKey: job.apiKey, model: o.model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: prompt }],
-        maxTokens: Math.min(9000, Math.round(tw * 3) + 600), temperature: CREATIVE_TEMP, totalMs: Math.max(45000, Math.min(240000, writeTimeLeft(o.isNsfw) - 20000)), creative: true }, 1);
-      let out = stripForeign(stripThinkingOutput(String(r.text || "").trim().replace(/^\s*(?:TIÊU ĐỀ|TITLE)\s*:\s*[^\n]+\n+/i, "").replace(/^\s*NỘI DUNG\s*:\s*/i, "").trim()));
-      if (r.finishReason === "length") return null;
-      const nw = countWords(out);
-      if (nw < c.words * 1.08) return null;
-      if (overlap(c.text.slice(0, 500), out.slice(0, 900)) < 0.3) return null;               // mở đầu đoạn bị đổi/lạc đề
-      if (isLast && overlap(lastPara(c.text), lastPara(out)) < 0.4) return null;              // đoạn kết bị đổi (bịa thêm)
-      if (isLast && !endsCleanly(out)) return null;
-      return { text: out, words: nw };
-    } catch (e) { return null; }
-  };
-  // V12.21: khối nào hỏng/không dài hơn thì thử lại 1 lần với nhắc nhở mạnh hơn (nếu còn thời gian).
-  const doChunk = async (i) => {
-    let r = await doChunkOnce(i, "");
-    if (!r && writeTimeLeft(o.isNsfw) > 90000) r = await doChunkOnce(i, "LẦN THỬ LẠI: bản trước không đủ dài hoặc lệch nội dung. Lần này hãy viết CHẬM hơn nữa, mỗi hành động/lời thoại gốc thành 2–4 câu có giác quan + nội tâm, vẫn giữ đúng thứ tự và điểm mở/kết của đoạn.");
-    return r;
-  };
-  const results = new Array(chunks.length).fill(null);
-  for (let i = 0; i < chunks.length; i += 3) {
-    if (writeTimeLeft(o.isNsfw) < 60000) break;
-    const idx = [i, i + 1, i + 2].filter(k => k < chunks.length);
-    const rs = await Promise.all(idx.map(k => doChunk(k)));
-    idx.forEach((k, j) => { results[k] = rs[j]; });
-  }
-  // Ghép lại; không vượt maxWords: khối nào làm vượt thì giữ bản gốc
-  let total = 0; const origRest = (from) => chunks.slice(from).reduce((a, c) => a + c.words, 0);
-  const parts = []; let used = 0;
-  chunks.forEach((c, i) => {
-    const r = results[i];
-    if (r && total + r.words + origRest(i + 1) <= o.maxWords) { parts.push(r.text); total += r.words; used++; }
-    else { parts.push(c.text); total += c.words; }
-  });
-  const out = parts.join("\n\n"), nw = countWords(out);
-  if (!used || nw < cur * 1.05) return { ok: false, reason: `chỉ ${used}/${chunks.length} đoạn mở rộng được (${nw}/${cur} từ)` };
-  return { ok: true, text: out, used, total: chunks.length };
-}
-
 /* V12.20 — Khép câu cuối bị cụt: nhờ model viết nốt 1–3 câu; nếu không được thì lùi về câu hoàn chỉnh gần nhất. */
 async function closeDanglingEnding(job, text, closingBeat, model, isNsfw) {
   const base = String(text || "").replace(/\s+$/, "");
@@ -1576,7 +1501,7 @@ async function generateOneChapter(job) {
   const prompt = [
     `VIẾT CHƯƠNG ${chapterNumber}. Truyện đã có ${chapters.length} chương.`,
     hasBrief
-      ? `MỤC TIÊU THAM KHẢO ${minWords} từ; GIỚI HẠN CỨNG ${maxWords} từ. CHƯƠNG NÀY CÓ KẾ HOẠCH CỦA NGƯỜI DÙNG: độ dài do kế hoạch quyết định. Triển khai ĐỦ mọi ý theo đúng thứ tự rồi DỪNG ở ý cuối. Độ dài tối thiểu ${Math.round(minWords * 0.95)} từ: đạt bằng cách sống CHẬM từng khoảnh khắc của các ý đã có, KHÔNG bằng cách thêm cảnh/biến cố/nhân vật mới và KHÔNG nhảy cóc thời gian, KHÔNG tóm tắt. Mỗi ý trong kế hoạch phải viết thành một khối ~${Math.round(minWords / 5)}–${Math.round(minWords / 4)} từ, dùng các kỹ thuật: (1) giác quan chậm và cụ thể (ánh sáng, âm thanh, mùi, xúc giác, nhiệt độ); (2) nội tâm giằng co, mâu thuẫn giữa suy nghĩ và phản ứng cơ thể; (3) lặp có biến tấu — mỗi lần lặp phải mang thêm cảm xúc/mức độ/phản ứng mới; (4) thoại ngập ngừng, khoảng lặng, phản ứng nhỏ; (5) chi tiết môi trường và vật dụng. Mỗi khối phải có một chuyển biến nhỏ (đổi quyết định, lộ chi tiết, đổi thế chủ động). Xen câu dài miêu tả với câu ngắn, thoại, khoảng lặng. Cảnh càng căng/nhục nhã/kích thích thì càng viết chậm và chi tiết. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`
+      ? `MỤC TIÊU ${minWords} từ (tối thiểu ${Math.round(minWords * 0.95)} từ); GIỚI HẠN CỨNG ${maxWords} từ. GỢI Ý CHƯƠNG LÀ XƯƠNG SỐNG, KHÔNG PHẢI KỊCH BẢN TỪNG CÂU: bạn được TỰ DO sáng tác toàn bộ phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng nhân vật, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên, mượt và dài. Mỗi ý/nhịp trong gợi ý phải được viết thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả) khoảng ${Math.round(minWords / 5)}–${Math.round(minWords / 3)} từ; không tóm tắt, không nhảy cóc thời gian. Cảnh phụ nào thêm vào cũng phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI — không lặp ý, không độn chữ. GIỚI HẠN: giữ 1–3 sự kiện chính; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành cho chương sau, không đổi hướng truyện. ENDING ANCHOR (cú chốt cuối chương) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới nó ở ĐOẠN CUỐI, sau khi đã đủ độ dài; chưa đủ dài thì tiếp tục triển khai diễn biến dẫn tới nó; viết xong anchor thì DỪNG HẲN. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`
       : `MỤC TIÊU ${minWords} từ; GIỚI HẠN CỨNG ${maxWords} từ. Khi đạt khoảng ${minWords} từ và cảnh đã có điểm dừng tự nhiên thì phải kết thúc; tuyệt đối không kéo dài vượt ${maxWords} từ. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`,
     "Không mở đầu bằng tiêu đề, không giải thích ngoài truyện.",
     "Không lặp lại đoạn kết chương trước; phải tiếp nối nguyên nhân và hệ quả.",
@@ -1597,14 +1522,16 @@ async function generateOneChapter(job) {
       (state.directive ? ("- MỆNH LỆNH CHƯƠNG NÀY (GIỮ NGUYÊN TOÀN BỘ, KHÔNG RÚT GỌN): " + String(state.directive) + "\n") : ""),
     "QUY TẮC ĐẦU RA V12: Chỉ viết văn xuôi của chương. Không xuất TIÊU ĐỀ:, NỘI DUNG:, markdown, ghi chú hay lời giải thích. Tên chương do hệ thống quản lý riêng.",
     "VĂN PHONG V12: câu văn tự nhiên như tiểu thuyết tiếng Việt được biên tập bởi người Việt; thay đổi nhịp câu theo cảnh; không cố làm mọi câu hoa mỹ; không né từ tự nhiên chỉ vì sợ lặp.",
-    "KẾT THÚC: nếu gần đủ độ dài và cảnh đã có điểm dừng tự nhiên, kết thúc gọn tại điểm đó; không thêm biến cố mới chỉ để đủ số từ.",
+    hasBrief
+      ? "KẾT THÚC: chỉ kết chương khi ĐÃ đủ độ dài tối thiểu VÀ đã tới Ending Anchor/ý cuối của gợi ý. Chưa tới thì cứ tiếp tục triển khai tự nhiên (thêm cảnh phụ, thoại, nội tâm); không kết sớm, không tóm tắt phần còn lại để lao tới anchor."
+      : "KẾT THÚC: nếu gần đủ độ dài và cảnh đã có điểm dừng tự nhiên, kết thúc gọn tại điểm đó; không thêm biến cố lớn mới chỉ để đủ số từ.",
     // V12.20: khối khóa kế hoạch đặt CUỐI prompt (model chú ý nhất phần cuối)
     hasBrief ? [
       "===== KẾ HOẠCH CHƯƠNG — NGUỒN SỰ THẬT DUY NHẤT (NGƯỜI DÙNG VIẾT) =====",
       state.directive ? ("MỆNH LỆNH: " + String(state.directive).trim()) : "",
       state.nextChapterHint ? ("GỢI Ý: " + String(state.nextChapterHint).trim()) : "",
       "===== HẾT KẾ HOẠCH =====",
-      "LUẬT BÁM KẾ HOẠCH: (1) Viết đúng thứ tự các ý ở trên. (2) Không thêm sự kiện, cảnh, nhân vật hay manh mối mà kế hoạch không nhắc. (3) Ý cuối cùng của kế hoạch là ĐIỂM KẾT CHƯƠNG: viết xong ý đó thì DỪNG HẲN, không viết thêm đoạn nào sau nó, không thêm cảnh kế tiếp, không tóm tắt, không dự báo.",
+      "LUẬT BÁM KẾ HOẠCH: (1) Đi theo đúng thứ tự các ý ở trên. (2) Được thêm cảnh phụ, thoại, nội tâm, chi tiết đời thường BÊN TRONG các ý của kế hoạch; không thêm biến cố lớn, nhân vật quan trọng mới, arc mới hay manh mối để dành chương sau. (3) Ý cuối cùng / Ending Anchor là ĐIỂM KẾT CHƯƠNG: chỉ viết tới nó ở cuối chương, sau khi đã đủ độ dài; viết xong thì DỪNG HẲN, không viết thêm đoạn nào sau nó, không thêm cảnh kế tiếp, không tóm tắt, không dự báo.",
       closingBeat ? ("CÚ CHỐT BẮT BUỘC LÀ CÂU/CẢNH CUỐI CÙNG CỦA CHƯƠNG: " + closingBeat) : "",
       "Câu cuối chương phải là câu hoàn chỉnh, kết thúc bằng dấu câu."
     ].filter(Boolean).join("\n") : ""
@@ -1647,16 +1574,41 @@ async function generateOneChapter(job) {
   const maxAttempts = isNsfw ? Math.max(4, Math.min(8, configuredAttempts)) : Math.max(0, Math.min(8, configuredAttempts));
   // V12.20: có gợi ý/mệnh lệnh thì CHỈ viết tiếp khi model bị cắt giữa chừng (hết token/đứt kết nối).
   // Trước đây bản nền thấy chưa đủ số từ là tự gọi "Viết TIẾP" không kèm gợi ý -> model hết ý nên bịa cảnh mới.
-  while (countWords(text) < minWords && countWords(text) < maxWords && attempts < maxAttempts && (!hasBrief || truncated)) {
+  const loopGoal = hasBrief ? Math.round(minWords * 0.95) : minWords;
+  let insertUsed = 0;
+  while (countWords(text) < loopGoal && countWords(text) < maxWords && attempts < maxAttempts) {
+    // V12.22: có gợi ý + model đã kết (không bị cắt) mà còn ngắn -> CHÈN thêm diễn biến vào TRƯỚC đoạn kết, giữ nguyên Ending Anchor.
+    const insertMode = hasBrief && !truncated;
+    if (insertMode && insertUsed >= 2) break;
     if (writeTimeLeft(isNsfw) < 30000) { issues.push("Dừng viết tiếp vì hết ngân sách thời gian của job"); break; }
     attempts++;
     const current = countWords(text);
     const tail = text.slice(-5000);
-    const need = Math.max(800, Math.min(minWords - current, maxWords - current));
+    const need = Math.max(insertMode ? 400 : 800, Math.min(minWords - current, maxWords - current));
+    let ins = null;
+    if (insertMode) {
+      insertUsed++;
+      const ps = String(text).split(/\n\s*\n/).map(x => x.trim()).filter(Boolean);
+      let k = ps.length, ew = 0;
+      while (k > 1 && ew < 150 && ps.length - k < 4) { k--; ew += countWords(ps[k]); }
+      if (k < 1) k = 1;
+      ins = { body: ps.slice(0, k).join("\n\n"), ending: ps.slice(k).join("\n\n") };
+      if (!ins.body || !ins.ending) { issues.push("Không tách được đoạn kết để chèn thêm diễn biến"); break; }
+    }
+    const insertPrompt = ins ? [
+      `CHÈN THÊM DIỄN BIẾN vào GIỮA chương ${chapterNumber}. Chương hiện ${current} từ, cần thêm khoảng ${need} từ. Mục tiêu ${minWords} từ, tuyệt đối không vượt ${maxWords} từ.`,
+      "Bản nháp hiện đã đi tới đoạn kết quá nhanh. Hãy viết PHẦN NỐI nằm GIỮA 'ĐOẠN TRƯỚC' và 'ĐOẠN KẾT': thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả; mỗi nhịp phải mang thông tin/cảm xúc/quyết định MỚI, không lặp ý, không độn chữ.",
+      "CẤM: viết lại hoặc tóm tắt nội dung đã có; viết nội dung của đoạn kết; kết chương; thêm biến cố lớn, nhân vật quan trọng mới, arc mới, thông tin để dành chương sau. Câu cuối của phần nối phải dẫn tự nhiên vào câu đầu của đoạn kết.",
+      storyControlPrompt(state),
+      (state.directive || state.nextChapterHint) ? ("KẾ HOẠCH CỦA NGƯỜI DÙNG:\n" + [state.directive ? ("MỆNH LỆNH: " + String(state.directive).trim()) : "", state.nextChapterHint ? ("GỢI Ý: " + String(state.nextChapterHint).trim()) : ""].filter(Boolean).join("\n") + (closingBeat ? ("\nENDING ANCHOR: " + closingBeat) : "")) : "",
+      "ĐOẠN TRƯỚC (đã viết; giữ giọng văn, nhịp câu, POV, thì kể, xưng hô):", ins.body.slice(-3500),
+      "ĐOẠN KẾT (đã viết, sẽ nằm NGAY SAU phần bạn viết; KHÔNG viết lại):", ins.ending,
+      "Chỉ trả văn xuôi của phần nối, bắt đầu ngay sau câu cuối của ĐOẠN TRƯỚC."
+    ].filter(Boolean).join("\n\n") : "";
     try {
       const cont = await callWithRetry({
         endpoint: job.apiEndpoint, apiKey: job.apiKey, model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: [
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: ins ? insertPrompt : [
           `Viết TIẾP chương ${chapterNumber}. Hiện ${current} từ, cần thêm khoảng ${need} từ. Mục tiêu ${minWords} từ, tuyệt đối không vượt ${maxWords} từ. Khi đạt mục tiêu thì kết thúc tự nhiên.`,
           "Bắt đầu ngay sau câu cuối. Không tóm tắt, không mở chương mới, không lặp.",
           isNsfw
@@ -1682,28 +1634,29 @@ async function generateOneChapter(job) {
           if (retry.text && retry.text.trim()) contText = String(retry.text).trim();
         } catch (_) {}
       }
-      const dedupedCont = dropRestartedContinuation(text, contText);
+      const dedupedCont = dropRestartedContinuation(text, contText);  // với chế độ chèn: so với toàn bộ chương (gồm cả đoạn kết)
       if (!dedupedCont.trim() || countWords(dedupedCont) < 40) { issues.push(`Viết tiếp #${attempts} lặp lại phần đã có nên bị bỏ`); break; }
       if (dedupedCont.length < contText.length) issues.push(`Viết tiếp #${attempts}: đã lược đoạn lặp`);
       contText = dedupedCont;
       const remaining = maxWords - current;
       if (remaining <= 0) break;
       const capped = trimToWordLimit(contText, remaining);
+      if (ins) {
+        // chèn vào trước đoạn kết; câu cuối phần chèn bị cụt thì lùi về câu hoàn chỉnh để không dính vào đoạn kết
+        const mid = trimToLastSentence(capped.text, 0.6).text;
+        if (countWords(mid) < 120) { issues.push(`Chèn diễn biến #${attempts} quá ngắn nên bị bỏ`); break; }
+        text = ins.body.replace(/\s+$/, "") + "\n\n" + mid.trim() + "\n\n" + ins.ending;
+        issues.push(`Đã chèn thêm ${countWords(mid)} từ diễn biến trước đoạn kết (giữ nguyên Ending Anchor)`);
+        truncated = false;
+        continue;
+      }
       text = text.replace(/\s+$/, "") + "\n\n" + capped.text;
       truncated = cont.finishReason === "length" || capped.trimmed;
       if (capped.trimmed) break;
     } catch (e) { issues.push(`Viết tiếp #${attempts}: ${e.message}`); break; }
   }
   { const dd = dedupeRepeatedScene(text); if (dd.length < text.length) { text = dd; issues.push("Đã cắt phần chương bị viết lặp lại từ đầu"); } }
-  // V12.20: chương có gợi ý mà còn ngắn -> MỞ RỘNG TẠI CHỖ (miêu tả/nội tâm/thoại) thay vì viết nối thêm cuối chương.
-  if (hasBrief && !truncated && countWords(text) < minWords * 0.95) {
-    for (let pass = 0; pass < 2 && countWords(text) < minWords * 0.95; pass++) {
-      const ex = await expandChapterInPlace(job, text, { minWords, maxWords, closingBeat, model, isNsfw, state });
-      if (!ex.ok) { issues.push("Mở rộng chương không đạt: " + ex.reason); break; }
-      issues.push(`Đã mở rộng chương bằng miêu tả sâu hơn (${ex.used}/${ex.total} đoạn): ${countWords(text)} → ${countWords(ex.text)} từ`);
-      text = ex.text;
-    }
-  }
+  // V12.22: ĐÃ BỎ bước 'chia đoạn làm dày' (expandChapterInPlace). Độ dài đạt bằng prompt tự do + chèn diễn biến trước đoạn kết (ở vòng viết tiếp phía trên).
   text = formatParagraphs(stripForeign(stripThinkingOutput(text)));
   const _allowNames = (state.characters || []).map(x => x && x.name).filter(Boolean);
   // V12.20: tự sửa từ lỗi ghép (mươititude, bănnton, bọcampo...) bằng cách nhờ model chép lại ĐÚNG câu chứa từ đó.

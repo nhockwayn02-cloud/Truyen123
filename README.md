@@ -1,3 +1,5 @@
+# V12.22 — AI tự do sáng tác thân chương (bỏ chia đoạn làm dày); chỉ khóa Ending Anchor. Xem PATCH_NOTES_V12.22_FREE_WRITING.md và PROMPT_V12.22.md.
+
 # V12 — Writing Engine Upgrade
 
 V12 keeps the V11.1 story-state pipeline and upgrades prose generation using the smoother V8-style path: temperature 0.82, no repetition penalties, prose-only output, and continuation style-lock.

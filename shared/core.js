@@ -12,7 +12,7 @@ function chapterWordLimits(st) {
   // Client gọi không tham số (dùng state toàn cục); worker truyền state của job.
   if (!st && typeof state !== "undefined") st = state;
   const target = Math.min(Math.max(Number(st && st.minChapterWords) || 5000, 500), 6000);
-  return { target, hardMax: Math.ceil(target * 1.15) };
+  return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
 function trimToWordLimit(text, maxWords) {
@@ -363,7 +363,7 @@ function trimToLastSentence(text, minRatio) {
 // V12.20: lấy "cú chốt / kết chương" mà người dùng ghi trong gợi ý/mệnh lệnh (để nhắc AI dừng đúng chỗ và để khép chương khi bị cụt).
 function extractClosingBeat(text) {
   const src = String(text || ""); if (!src.trim()) return "";
-  const re = /(cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)/i;
+  const re = /(ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)/i;
   const lines = src.split(/\n+/).map(x => x.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) if (re.test(lines[i])) return lines[i].slice(0, 500);
   const sents = src.split(/(?<=[.!?…])\s+/);
@@ -465,7 +465,8 @@ function storyControlPrompt(st) {
     "- Không tạo năng lực, quy tắc thế giới hoặc vật phẩm quan trọng mới chỉ để giải quyết vấn đề tức thời.",
     "- Chapter Focus chỉ kiểm soát phạm vi chủ đề trưởng thành; không được dùng nó để mở rộng cốt truyện ngoài brief.",
     "- Nếu Directive/Story Bible/Current Status xung đột, không âm thầm sửa canon; ưu tiên dữ liệu canon và ghi nhận xung đột khi cần.",
-    "- Mục tiêu là chiều sâu và tính liên tục, không phải nhồi thêm sự kiện."
+    "- ĐƯỢC TỰ DO: thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, giác quan, hành động nhỏ, chi tiết đời thường BÊN TRONG các sự kiện chính; không được dùng quyền này để mở arc lớn, thêm nhân vật quan trọng mới hay tiết lộ thông tin để dành cho chương sau.",
+    "- Mục tiêu là chiều sâu và tính liên tục, không phải nhồi thêm biến cố lớn."
   ].filter(Boolean).join("\n");
 }
 
