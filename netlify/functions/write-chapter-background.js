@@ -1677,20 +1677,23 @@ async function generateOneChapter(job) {
   // V12.2: nếu là nhánh trưởng thành, cho phép tối đa 8 lượt nối tiếp bất kể cấu hình cũ
   // chỉ đặt 4. Mỗi lượt vẫn dùng chính model đã route ở trên.
   const configuredAttempts = Number(state.autoContinueMax) || 4;
-  const maxAttempts = isNsfw ? Math.max(4, Math.min(8, configuredAttempts)) : Math.max(0, Math.min(8, configuredAttempts));
+  // V12.23: số lượt viết thêm = ĐÚNG số Auto-continue người dùng đặt (không còn ép tối thiểu 4 cho 18+).
+  const maxAttempts = Math.max(0, Math.min(8, configuredAttempts));
   // V12.20: có gợi ý/mệnh lệnh thì CHỈ viết tiếp khi model bị cắt giữa chừng (hết token/đứt kết nối).
   // Trước đây bản nền thấy chưa đủ số từ là tự gọi "Viết TIẾP" không kèm gợi ý -> model hết ý nên bịa cảnh mới.
   const loopGoal = hasBrief ? Math.round(minWords * 0.95) : minWords;
   let insertUsed = 0;
-  while (countWords(text) < loopGoal && countWords(text) < maxWords && attempts < maxAttempts) {
+  const failAttempt = (why) => issues.push(`Viết tiếp #${attempts}: ${why}`);
+  while (countWords(text) < loopGoal && countWords(text) < maxWords) {
+    if (attempts >= maxAttempts) { issues.push(`Auto-continue dừng vì đã dùng hết ${maxAttempts}/${maxAttempts} lượt (còn ${countWords(text)}/${minWords} từ)`); break; }
     // V12.22: có gợi ý + model đã kết (không bị cắt) mà còn ngắn -> CHÈN thêm diễn biến vào TRƯỚC đoạn kết, giữ nguyên Ending Anchor.
     const insertMode = hasBrief && !truncated;
-    if (insertMode && insertUsed >= 2) break;
     if (writeTimeLeft(isNsfw) < 30000) { issues.push("Dừng viết tiếp vì hết ngân sách thời gian của job"); break; }
     attempts++;
     const current = countWords(text);
     const tail = text.slice(-5000);
-    const need = Math.max(insertMode ? 400 : 800, Math.min(minWords - current, maxWords - current));
+    const _short = Math.min(minWords - current, maxWords - current);
+    const need = Math.max(insertMode ? 400 : 800, Math.ceil(_short / Math.max(1, maxAttempts - attempts + 1)));
     let ins = null;
     if (insertMode) {
       insertUsed++;
@@ -1699,7 +1702,7 @@ async function generateOneChapter(job) {
       while (k > 1 && ew < 150 && ps.length - k < 4) { k--; ew += countWords(ps[k]); }
       if (k < 1) k = 1;
       ins = { body: ps.slice(0, k).join("\n\n"), ending: ps.slice(k).join("\n\n") };
-      if (!ins.body || !ins.ending) { issues.push("Không tách được đoạn kết để chèn thêm diễn biến"); break; }
+      if (!ins.body || !ins.ending) { failAttempt("không tách được đoạn kết để chèn diễn biến"); break; }
     }
     const insertPrompt = ins ? [
       `CHÈN THÊM DIỄN BIẾN vào GIỮA chương ${chapterNumber}. Chương hiện ${current} từ, cần thêm khoảng ${need} từ. Mục tiêu ${minWords} từ, tuyệt đối không vượt ${maxWords} từ.`,
@@ -1719,7 +1722,9 @@ async function generateOneChapter(job) {
           "Bắt đầu ngay sau câu cuối. Không tóm tắt, không mở chương mới, không lặp.",
           isNsfw
             ? "Đây là continuation của cùng một cảnh trưởng thành đã được chọn đúng model. Giữ nguyên mạch, nhịp, POV, xưng hô và trạng thái nhân vật; không tự chuyển sang cảnh mới chỉ vì đã viết được một đoạn. Tiếp tục cho đến khi đạt mục tiêu độ dài hoặc model thực sự hết output."
-            : "Nếu diễn biến đã tự nhiên đi tới điểm dừng hợp lý gần đủ số từ, hãy kết thúc chương ở đó — KHÔNG cố nhồi thêm sự kiện/tình tiết mới chỉ để kéo dài.",
+            : (current < minWords * 0.85
+              ? `Chương còn THIẾU NHIỀU (${current}/${minWords} từ): hãy viết tiếp diễn biến mới hợp lý, liền mạch (cảnh, hội thoại, nội tâm, hành động, hệ quả) để tiến tới khoảng ${minWords} từ; KHÔNG kết chương sớm.`
+              : "Nếu diễn biến đã tự nhiên đi tới điểm dừng hợp lý gần đủ số từ, hãy kết thúc chương ở đó — KHÔNG cố nhồi thêm sự kiện/tình tiết mới chỉ để kéo dài."),
           storyControlPrompt(state),
           hasBrief ? ("KẾ HOẠCH CỦA NGƯỜI DÙNG (chỉ viết nốt các ý CHƯA được viết trong đoạn đã có, đúng thứ tự; ý cuối là điểm kết chương — viết xong thì DỪNG, không thêm gì sau đó):\n" + [state.directive ? ("MỆNH LỆNH: " + String(state.directive).trim()) : "", state.nextChapterHint ? ("GỢI Ý: " + String(state.nextChapterHint).trim()) : ""].filter(Boolean).join("\n") + (closingBeat ? ("\nCÚ CHỐT CUỐI CHƯƠNG: " + closingBeat) : "") + "\nNếu các ý trong kế hoạch đã được viết hết trong đoạn đã có thì chỉ khép chương bằng 1–2 câu rồi dừng.") : "",
           "ĐOẠN CUỐI (giữ giọng văn, nhịp câu, POV, thì kể, xưng hô của đoạn này):", tail,
@@ -1728,7 +1733,7 @@ async function generateOneChapter(job) {
         ].join("\n\n") }],
         maxTokens: isNsfw ? 12000 : 9000, temperature: CREATIVE_TEMP, totalMs: Math.max(45000, Math.min(420000, writeTimeLeft(isNsfw) - 12000)), creative: true
       }, 2);
-      if (!cont.text || cont.text.trim().length < 50) { issues.push(`Viết tiếp #${attempts} quá ngắn`); break; }
+      if (!cont.text || cont.text.trim().length < 50) { failAttempt("AI trả rỗng/quá ngắn"); continue; }
       let contText = String(cont.text).trim();
       if (detectNonVietnamese(contText) && writeTimeLeft(isNsfw) > 60000) {
         try {
@@ -1741,7 +1746,7 @@ async function generateOneChapter(job) {
         } catch (_) {}
       }
       const dedupedCont = dropRestartedContinuation(text, contText);  // với chế độ chèn: so với toàn bộ chương (gồm cả đoạn kết)
-      if (!dedupedCont.trim() || countWords(dedupedCont) < 40) { issues.push(`Viết tiếp #${attempts} lặp lại phần đã có nên bị bỏ`); break; }
+      if (!dedupedCont.trim() || countWords(dedupedCont) < 40) { failAttempt("phần viết tiếp lặp lại nội dung đã có nên bị bỏ"); continue; }
       if (dedupedCont.length < contText.length) issues.push(`Viết tiếp #${attempts}: đã lược đoạn lặp`);
       contText = dedupedCont;
       const remaining = maxWords - current;
@@ -1750,7 +1755,7 @@ async function generateOneChapter(job) {
       if (ins) {
         // chèn vào trước đoạn kết; câu cuối phần chèn bị cụt thì lùi về câu hoàn chỉnh để không dính vào đoạn kết
         const mid = trimToLastSentence(capped.text, 0.6).text;
-        if (countWords(mid) < 120) { issues.push(`Chèn diễn biến #${attempts} quá ngắn nên bị bỏ`); break; }
+        if (countWords(mid) < 120) { failAttempt("phần chèn diễn biến quá ngắn (<120 từ) nên bị bỏ"); continue; }
         text = ins.body.replace(/\s+$/, "") + "\n\n" + mid.trim() + "\n\n" + ins.ending;
         issues.push(`Đã chèn thêm ${countWords(mid)} từ diễn biến trước đoạn kết (giữ nguyên Ending Anchor)`);
         truncated = false;
@@ -1759,7 +1764,7 @@ async function generateOneChapter(job) {
       text = text.replace(/\s+$/, "") + "\n\n" + capped.text;
       truncated = cont.finishReason === "length" || capped.trimmed;
       if (capped.trimmed) break;
-    } catch (e) { issues.push(`Viết tiếp #${attempts}: ${e.message}`); break; }
+    } catch (e) { failAttempt("API lỗi — " + e.message); continue; }
   }
   { const dd = dedupeRepeatedScene(text); if (dd.length < text.length) { text = dd; issues.push("Đã cắt phần chương bị viết lặp lại từ đầu"); } }
   // V12.22: ĐÃ BỎ bước 'chia đoạn làm dày' (expandChapterInPlace). Độ dài đạt bằng prompt tự do + chèn diễn biến trước đoạn kết (ở vòng viết tiếp phía trên).
@@ -2658,7 +2663,7 @@ exports.handler = async (event) => {
       runPar("Scene", () => scanScenes(job, chapter, n, newState)),
       runPar("Gợi ý chương sau", async () => {
         const hint = await generateNextChapterHint(job, chapter, chapter.summary, n, newState);
-        if (hint) newState.nextChapterHint = hint;
+        newState.nextChapterHint = hint || "";   // V12.23: tạo thất bại -> xóa gợi ý cũ đã dùng, không để chương sau bị ép viết lại kế hoạch cũ
         return { ok: !!hint, notes: [hint ? "Gợi ý chương sau: đã cập nhật" : "Gợi ý chương sau: bỏ trống (lỗi hoặc rỗng)"], problems: [] };
       })
     ]);

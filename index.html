@@ -5823,15 +5823,20 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
   const minWords=limits.target, maxWords=limits.hardMax;
   const maxAttempts = state.autoContinueMax || 4;
   let attempts = 0, insertUsed = 0;
-  while(attempts < maxAttempts){
+  const stopReasons = [];   // V12.23: lý do từng lượt thất bại / lý do dừng, báo ra status + chẩn đoán chương
+  const failAttempt = (why) => { stopReasons.push("#" + attempts + ": " + why); console.warn("[Auto-continue] #" + attempts + " " + why); };
+  let endNote = "";
+  while(true){
     const wc = countWords(chapterObj.text);
     const hasUserBrief = !!(String(state.directive||"").trim() || String(state.nextChapterHint||"").trim());
-    if(wc >= maxWords) break;
+    if(wc >= maxWords){ endNote = "đã chạm giới hạn tối đa " + maxWords + " từ"; break; }
     // V12.22: có brief -> mục tiêu 95% target; không brief -> 100% target.
-    if(wc >= (hasUserBrief ? Math.round(minWords*0.95) : minWords)) break;
-    // Có brief + model đã kết (không bị cắt) mà còn ngắn -> CHÈN thêm diễn biến trước đoạn kết (giữ Ending Anchor), tối đa 2 lần.
+    const goalWords = hasUserBrief ? Math.round(minWords*0.95) : minWords;
+    if(wc >= goalWords){ endNote = ""; break; }
+    // V12.23: số lượt viết thêm = ĐÚNG số Auto-continue đã đặt; số lần chèn diễn biến tự động (không giới hạn riêng).
+    if(attempts >= maxAttempts){ endNote = "đã dùng hết " + maxAttempts + "/" + maxAttempts + " lượt Auto-continue"; break; }
+    // Có brief + model đã kết (không bị cắt) mà còn ngắn -> CHÈN thêm diễn biến trước đoạn kết (giữ Ending Anchor).
     const insertMode = hasUserBrief && chapterObj.truncated !== true;
-    if(insertMode && insertUsed >= 2) break;
     attempts++;
 
     /* Auto NSFW giữa chương: từ khóa + nhiệt độ */
@@ -5864,7 +5869,9 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
       "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Giọng tự nhiên.",
       "",
       "Bạn đang VIẾT TIẾP chương " + chapterNumber + " (KHÔNG mở chương mới, KHÔNG tóm tắt).",
-      "Chỉ viết tiếp khi đoạn hiện tại thực sự bị cắt giữa chừng. Không kéo dài để đạt chỉ tiêu từ nếu brief/ngữ cảnh đã hoàn tất. GIỚI HẠN CỨNG " + maxWords + " từ. Hiện " + wc + " từ.",
+      ((wc < minWords * 0.85)
+        ? ("Chương mới được " + wc + "/" + minWords + " từ, CÒN THIẾU NHIỀU. Hãy viết tiếp diễn biến mới hợp lý, liền mạch (thêm cảnh, hội thoại, nội tâm, hành động, hệ quả) để tiến tới khoảng " + minWords + " từ; KHÔNG kết chương sớm. GIỚI HẠN CỨNG " + maxWords + " từ.")
+        : ("Chỉ viết tiếp khi đoạn hiện tại thực sự bị cắt giữa chừng. Không kéo dài để đạt chỉ tiêu từ nếu brief/ngữ cảnh đã hoàn tất. GIỚI HẠN CỨNG " + maxWords + " từ. Hiện " + wc + " từ.")),
       "",
       "===== ĐOẠN CUỐI HIỆN TẠI (PHẢI TIẾP NỐI TỪ ĐÂY) =====",
       tail,
@@ -5890,12 +5897,12 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
       let k = ps.length, ew = 0;
       while(k > 1 && ew < 150 && ps.length - k < 4){ k--; ew += countWords(ps[k]); }
       ins = { body: ps.slice(0,k).join("\n\n"), ending: ps.slice(k).join("\n\n") };
-      if(!ins.body || !ins.ending){ console.warn("[Chèn diễn biến] không tách được đoạn kết"); break; }
+      if(!ins.body || !ins.ending){ failAttempt("không tách được đoạn kết để chèn diễn biến"); break; }
       const closingIns = extractClosingBeat(state.nextChapterHint) || extractClosingBeat(state.directive);
       insertPrompt = [
         "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Giọng tự nhiên.",
         "",
-        "CHÈN THÊM DIỄN BIẾN vào GIỮA chương " + chapterNumber + ". Hiện " + wc + " từ, cần thêm khoảng " + Math.max(400, Math.min(minWords - wc, maxWords - wc)) + " từ. Mục tiêu " + minWords + " từ, tuyệt đối không vượt " + maxWords + " từ.",
+        "CHÈN THÊM DIỄN BIẾN vào GIỮA chương " + chapterNumber + ". Hiện " + wc + " từ, cần thêm khoảng " + Math.max(400, Math.ceil(Math.min(minWords - wc, maxWords - wc) / Math.max(1, maxAttempts - attempts + 1))) + " từ (tối thiểu). Mục tiêu " + minWords + " từ, tuyệt đối không vượt " + maxWords + " từ.",
         "Bản nháp đã đi tới đoạn kết quá nhanh. Viết PHẦN NỐI nằm GIỮA 'ĐOẠN TRƯỚC' và 'ĐOẠN KẾT': thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả; mỗi nhịp phải mang thông tin/cảm xúc/quyết định MỚI, không lặp ý, không độn chữ.",
         "CẤM: viết lại hoặc tóm tắt nội dung đã có; viết nội dung của đoạn kết; kết chương; thêm biến cố lớn, nhân vật quan trọng mới, arc mới, thông tin để dành chương sau. Câu cuối phần nối phải dẫn tự nhiên vào câu đầu của đoạn kết.",
         "MỨC MIÊU TẢ: " + (DESCRIPTION_PROMPTS[state.descriptionLevel] || ""),
@@ -5921,17 +5928,17 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
         frequency_penalty: 0.15, presence_penalty: 0.1,
         streaming: true, onChunk: onChunk
       });
-      if(!contText || contText.length < 50) break;
+      if(!contText || contText.length < 50){ failAttempt("AI trả rỗng/quá ngắn"); continue; }
       if(detectNonVietnamese(contText)){
         console.warn("[Auto-continue] phát hiện ngôn ngữ khác, yêu cầu viết lại bằng tiếng Việt.");
         try{
           const r2=await callAI(prompt+"\n\nCẢNH BÁO NGÔN NGỮ: Bắt buộc 100% TIẾNG VIỆT CÓ DẤU; không dùng chữ Hán/Nhật/Hàn/Cyrillic.",{maxTokens:12000,temperature:0.55,modelOverride:targetModel});
           if(r2.text) contText=r2.text;
         }catch(e){}
-        if(detectNonVietnamese(contText)) break;
+        if(detectNonVietnamese(contText)){ failAttempt("AI trả sai ngôn ngữ (không phải tiếng Việt)"); continue; }
       }
       { const dd = dropRestartedContinuation(chapterObj.text, contText);
-        if(!dd.trim() || countWords(dd) < 40){ setStatus("Phần viết tiếp lặp lại nội dung đã có nên bị bỏ.", false); break; }
+        if(!dd.trim() || countWords(dd) < 40){ failAttempt("phần viết tiếp lặp lại nội dung đã có nên bị bỏ"); continue; }
         contText = dd; }
       contText = formatParagraphs(stripForeign(stripThinkingOutput(contText)));
       let cleaned = contText.trim();
@@ -5941,11 +5948,11 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
         if(cut > 40) cleaned = cleaned.slice(cut).trim();
       }
       const remaining=maxWords-wc;
-      if(remaining<=0) break;
+      if(remaining<=0){ endNote = "đã chạm giới hạn tối đa " + maxWords + " từ"; break; }
       const capped=trimToWordLimit(cleaned,remaining);
       if(ins){
         const mid = trimToLastSentence(capped.text, 0.6).text.trim();
-        if(countWords(mid) < 120){ console.warn("[Chèn diễn biến] phần chèn quá ngắn nên bị bỏ"); break; }
+        if(countWords(mid) < 120){ failAttempt("phần chèn diễn biến quá ngắn (<120 từ) nên bị bỏ"); continue; }
         chapterObj.text = ins.body.replace(/\s+$/,"") + "\n\n" + mid + "\n\n" + ins.ending;
         chapterObj.wordCount = countWords(chapterObj.text);
         chapterObj.truncated = false;
@@ -5955,12 +5962,18 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
       chapterObj.text = chapterObj.text.replace(/\s+$/,"") + "\n\n" + capped.text;
       chapterObj.wordCount = countWords(chapterObj.text);
       chapterObj.truncated = finishReason === "length" || capped.trimmed;
-      if(capped.trimmed) break;
+      if(capped.trimmed){ endNote = "đã chạm giới hạn tối đa " + maxWords + " từ"; break; }
     }catch(err){
       if(err.userAbort) throw err;
-      console.warn("[Auto-continue]", err.message);
-      break;
+      failAttempt("API lỗi — " + (err && err.message ? err.message : err));
     }
+  }
+  // V12.23: báo rõ lý do dừng khi chương chưa đạt mục tiêu.
+  const finalWc = countWords(chapterObj.text);
+  if(finalWc < (!!(String(state.directive||"").trim() || String(state.nextChapterHint||"").trim()) ? Math.round(minWords*0.95) : minWords)){
+    const why = (endNote ? endNote : "dừng sớm") + (stopReasons.length ? " | " + stopReasons.join("; ") : "");
+    chapterObj.updateDiagnostics = (chapterObj.updateDiagnostics || []).concat(["Auto-continue dừng ở " + finalWc + "/" + minWords + " từ: " + why]);
+    setStatus("⚠ Auto-continue dừng ở " + finalWc + "/" + minWords + " từ — " + why, false);
   }
   return chapterObj;
 }
@@ -6335,7 +6348,22 @@ async function runQualityGate(chapter, chapterNumber, plan, contextSummary, opts
     shouldStop:()=>userStopRequested
   },{enabled:state.qualityGateEnabled!==false,allowRewrite:opts.rewrite!==false,maxAttempts:state.qualityMaxAttempts});
 }
-async function runCanonPostProcess(chapterObj, cn, text, rawForPolish){
+/* V12.23: gợi ý chương sau phải HIỆN ở ô Gợi ý (trước đây chỉ lưu vào biến ẩn autoNextChapterHint nên ô luôn trống).
+   - Ô trống, hoặc vẫn đúng là gợi ý đã dùng để viết chương vừa xong -> thay bằng gợi ý chương sau.
+   - Người dùng đã tự sửa/gõ gợi ý mới trong lúc viết -> giữ nguyên, không ghi đè.
+   - Tạo thất bại: xóa gợi ý cũ (đã dùng) để chương sau không bị ép viết lại kế hoạch cũ. */
+let _writeBriefSnapshot = null;
+function applyNextChapterHint(cn, hint, briefUsed){
+  if(cn < state.chapters.length) return false;          // chỉ áp dụng cho chương mới nhất
+  const cur = String(state.nextChapterHint || "").trim();
+  const used = (briefUsed === null || briefUsed === undefined) ? null : String(briefUsed).trim();
+  const canReplace = !cur || (used !== null && cur === used);
+  if(!canReplace) return false;
+  state.nextChapterHint = hint || "";
+  if(typeof nextChapterHintEl !== "undefined" && nextChapterHintEl) nextChapterHintEl.value = state.nextChapterHint;
+  return true;
+}
+async function runCanonPostProcess(chapterObj, cn, text, rawForPolish, briefUsed){
     const postTasks = [];
     let polishPromise = Promise.resolve();
     if(state.spellCheckEnabled && rawForPolish){
@@ -6365,13 +6393,21 @@ async function runCanonPostProcess(chapterObj, cn, text, rawForPolish){
     }, "summary", {serial:true}));
     postTasks.push(sched(async ()=>{
       if(text){
-        try{
-          const hint = await generateNextChapterHint(text, chapterObj.summary, cn);
-          if(hint){
-            state.autoNextChapterHint = hint;
-            persist();
-          }
-        }catch(e){}
+        let hint = "", errMsg = "";
+        try{ hint = await generateNextChapterHint(text, chapterObj.summary, cn); }
+        catch(e){ errMsg = (e && e.message) ? e.message : String(e); }
+        if(hint){
+          state.autoNextChapterHint = hint;
+          const applied = applyNextChapterHint(cn, hint, briefUsed);
+          persist();
+          if(applied) setStatus("💡 Đã tạo gợi ý cho chương " + (cn + 1) + " (xem ô Gợi ý).", false);
+        }else{
+          applyNextChapterHint(cn, "", briefUsed);   // xóa gợi ý cũ đã dùng
+          persist();
+          const msg = "Gợi ý chương " + (cn + 1) + ": không tạo được" + (errMsg ? " — API lỗi: " + errMsg : " — AI trả rỗng") + ". Bấm nút tạo gợi ý để thử lại.";
+          chapterObj.updateDiagnostics = (chapterObj.updateDiagnostics || []).concat([msg]);
+          setStatus("⚠ " + msg, false);
+        }
       }
     }, "nextHint", {serial:true}));
     postTasks.push(sched(async ()=>{
@@ -6720,6 +6756,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
       canonVersion: null
     };
 
+    _writeBriefSnapshot = String(state.nextChapterHint || "");
     await autoContinueUntilDone(chapterObj, chapterNumber, targetModel, usingNsfw, onChunk);
     cancelStream();
     /* V12.22: ĐÃ BỎ bước 'chia đoạn làm dày'. Độ dài do prompt tự do + chế độ chèn diễn biến trong autoContinueUntilDone. */
@@ -6782,7 +6819,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
     /* Post-processing: chỉ sau khi Quality Gate PASS mới được cập nhật Canon/Memory.
        Điều này tránh race condition: Ch2 được tạo trong khi Character/Status
        của Ch1 vẫn chưa cập nhật xong. */
-    await runCanonPostProcess(chapterObj, chapterNumber, text, rawForPolish);
+    await runCanonPostProcess(chapterObj, chapterNumber, text, rawForPolish, _writeBriefSnapshot);
 
 
   }catch(err){
@@ -6918,6 +6955,7 @@ $ID("continueChapterBtn").addEventListener("click", async ()=>{
         try{
           const hint = await generateNextChapterHint(chapter.text, chapter.summary, cn);
           if(hint){ state.nextChapterHint = hint; nextChapterHintEl.value = hint; persist(); }
+          else { applyNextChapterHint(cn, "", null); persist(); }
         }catch(e){}
       }
     }, "nextHint", {serial:true}));
@@ -7898,7 +7936,7 @@ async function startBackgroundWrite(){
     let data={};try{data=await res.json();}catch(e){}
     if(res.status===401)throw new Error("Sai hoặc thiếu Mã truy cập server (mục 🔒 ở cột thiết lập).");
     if(!res.ok||!data.jobId||!data.accessToken)throw new Error(data.error||("HTTP "+res.status));
-    const record={jobId:data.jobId,accessToken:data.accessToken,storyId:state.storyId,baseChapterCount:state.chapters.length,createdAt:Date.now()};
+    const record={jobId:data.jobId,accessToken:data.accessToken,storyId:state.storyId,baseChapterCount:state.chapters.length,createdAt:Date.now(),briefAtStart:String(state.nextChapterHint||"")};
     localStorage.setItem(BG_JOB_KEY,JSON.stringify(record));
     bgWarnText=(data.warnings&&data.warnings.length)?(" ⚠ "+data.warnings.join(" ")):"";
     setBgStatus("✓ Job "+data.jobId.slice(-8)+" đang chạy. Có thể tắt iPhone."+bgWarnText,true);
@@ -8018,7 +8056,12 @@ async function mergeBackgroundChapter(statusData,record){
   state.memoryEvents=mergeArrayByIdOrName(state.memoryEvents,incoming.memoryEvents||[],"id");
   state.lastMemorySyncChapter=incoming.lastMemorySyncChapter||state.lastMemorySyncChapter||0;
   state.canonVersion=mergeCanonVersion(state.canonVersion, incoming.canonVersion);
-  if(incoming.nextChapterHint){ state.nextChapterHint=incoming.nextChapterHint; if(nextChapterHintEl) nextChapterHintEl.value=state.nextChapterHint; }
+  /* V12.23: job nền trả gợi ý chương sau (rỗng = tạo thất bại -> xóa gợi ý cũ đã dùng). Không ghi đè nếu người dùng đã gõ gợi ý mới trong lúc job chạy. */
+  if(typeof incoming.nextChapterHint === "string"){
+    const curH=String(state.nextChapterHint||"").trim();
+    const wasH=(record && typeof record.briefAtStart==="string") ? record.briefAtStart.trim() : null;
+    if(!curH || wasH===null || curH===wasH){ state.nextChapterHint=incoming.nextChapterHint; if(nextChapterHintEl) nextChapterHintEl.value=state.nextChapterHint; }
+  }
   persist();renderAll();
   try{ captureChapterSnapshot(state.chapters.length); }catch(e){}
   const last=state.chapters[state.chapters.length-1];
