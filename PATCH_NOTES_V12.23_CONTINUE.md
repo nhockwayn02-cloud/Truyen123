@@ -11,3 +11,8 @@
 - Ô trống hoặc vẫn là gợi ý đã dùng cho chương vừa viết -> thay bằng gợi ý mới. Nếu bạn đã tự gõ gợi ý khác trong lúc viết -> giữ nguyên.
 - Tạo gợi ý thất bại (API lỗi/AI trả rỗng): xóa gợi ý cũ đã dùng, báo ở status + chẩn đoán chương. Bản nền cũng xóa gợi ý cũ khi thất bại.
 - Bản nền: lúc gộp kết quả không ghi đè gợi ý nếu bạn đã gõ gợi ý mới trong lúc job chạy.
+
+# V12.23 – Viết thoải mái hơn để đủ số từ
+- Thêm "KẾ HOẠCH ĐỘ DÀI" (shared/core.js: buildLengthPlan, dùng chung client + worker): tách gợi ý thành các nhịp, chia ngân sách từ cho từng nhịp (tổng ≈ 105% mục tiêu, nhịp kết chương ≈ nửa ngân sách), đặt ở cuối prompt.
+- Dặn AI: mỗi nhịp phải đủ bối cảnh/hành động/thoại/nội tâm/hệ quả, cấm tóm tắt nhịp thành 1–2 đoạn, chỉ viết nhịp cuối khi đã gần đủ từ, nếu thiếu thì mở rộng phần giữa chứ không kết chương.
+- Khi có gợi ý/mệnh lệnh: bỏ ràng buộc "chỉ 1–3 sự kiện chính" (mâu thuẫn với gợi ý nhiều nhịp), thay bằng "đúng các nhịp trong gợi ý, không thêm biến cố lớn ngoài gợi ý".

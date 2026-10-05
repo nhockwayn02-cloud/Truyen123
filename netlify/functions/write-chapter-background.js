@@ -87,6 +87,31 @@ function chapterWordLimits(st) {
   return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
+// V12.23: KẾ HOẠCH ĐỘ DÀI — chia ngân sách từ cho từng nhịp của gợi ý để AI không nén mỗi nhịp thành vài đoạn rồi kết sớm.
+function buildLengthPlan(brief, target) {
+  const raw = String(brief || "").trim();
+  if (!raw || !target) return "";
+  let beats = raw.split(/\n+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 3) beats = raw.split(/(?<=[.!?…])\s+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 2) return "";
+  const isEnd = (x) => /^(chương\s+)?kết thúc|kết chương|cuối chương/i.test(x);
+  const weights = beats.map(x => isEnd(x) ? 0.5 : 1);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const goal = Math.round(target * 1.05);
+  const lines = beats.map((x, i) => {
+    const w = Math.max(100, Math.round((goal * weights[i] / sum) / 50) * 50);
+    const label = x.length > 70 ? x.slice(0, 70).replace(/\s+\S*$/, "") + "…" : x;
+    return (i + 1) + ") " + label + " ≈ " + w + " từ";
+  });
+  return [
+    "===== KẾ HOẠCH ĐỘ DÀI (BẮT BUỘC — lý do chương hay bị ngắn là nén mỗi nhịp thành vài đoạn) =====",
+    "Chia chương thành " + beats.length + " phần theo ĐÚNG thứ tự gợi ý, mỗi phần viết ĐỦ ngân sách từ (tổng ≈ " + goal + " từ):",
+    lines.join("\n"),
+    "Mỗi phần phải có: bối cảnh/không khí, hành động từng bước, hội thoại, nội tâm + cảm giác, phản ứng và hệ quả. CẤM tóm tắt một phần thành 1–2 đoạn hay nhảy cóc thời gian. Chỉ viết phần cuối cùng khi cộng dồn đã gần đủ " + goal + " từ; nếu thấy mới được khoảng " + Math.round(target * 0.9) + " từ thì mở rộng các phần giữa chứ KHÔNG kết chương.",
+    "===== HẾT KẾ HOẠCH ĐỘ DÀI ====="
+  ].join("\n");
+}
+
 function trimToWordLimit(text, maxWords) {
   // V12.14: cắt theo vị trí ký tự để GIỮ NGUYÊN xuống dòng/đoạn (bản cũ split+join làm mất toàn bộ đoạn văn/thoại).
   const s = String(text || "").trim();
@@ -1607,7 +1632,7 @@ async function generateOneChapter(job) {
   const prompt = [
     `VIẾT CHƯƠNG ${chapterNumber}. Truyện đã có ${chapters.length} chương.`,
     hasBrief
-      ? `MỤC TIÊU ${minWords} từ (tối thiểu ${Math.round(minWords * 0.95)} từ); GIỚI HẠN CỨNG ${maxWords} từ. GỢI Ý CHƯƠNG LÀ XƯƠNG SỐNG, KHÔNG PHẢI KỊCH BẢN TỪNG CÂU: bạn được TỰ DO sáng tác toàn bộ phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng nhân vật, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên, mượt và dài. Mỗi ý/nhịp trong gợi ý phải được viết thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả) khoảng ${Math.round(minWords / 5)}–${Math.round(minWords / 3)} từ; không tóm tắt, không nhảy cóc thời gian. Cảnh phụ nào thêm vào cũng phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI — không lặp ý, không độn chữ. GIỚI HẠN: giữ 1–3 sự kiện chính; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành cho chương sau, không đổi hướng truyện. ENDING ANCHOR (cú chốt cuối chương) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới nó ở ĐOẠN CUỐI, sau khi đã đủ độ dài; chưa đủ dài thì tiếp tục triển khai diễn biến dẫn tới nó; viết xong anchor thì DỪNG HẲN. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`
+      ? `MỤC TIÊU ${minWords} từ (tối thiểu ${Math.round(minWords * 0.95)} từ); GIỚI HẠN CỨNG ${maxWords} từ. GỢI Ý CHƯƠNG LÀ XƯƠNG SỐNG, KHÔNG PHẢI KỊCH BẢN TỪNG CÂU: bạn được TỰ DO sáng tác toàn bộ phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng nhân vật, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên, mượt và dài. Mỗi ý/nhịp trong gợi ý phải được viết thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả) khoảng ${Math.round(minWords / 5)}–${Math.round(minWords / 3)} từ; không tóm tắt, không nhảy cóc thời gian. Cảnh phụ nào thêm vào cũng phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI — không lặp ý, không độn chữ. GIỚI HẠN: chỉ các sự kiện chính có trong gợi ý, không thêm biến cố lớn ngoài gợi ý; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành cho chương sau, không đổi hướng truyện. ENDING ANCHOR (cú chốt cuối chương) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới nó ở ĐOẠN CUỐI, sau khi đã đủ độ dài; chưa đủ dài thì tiếp tục triển khai diễn biến dẫn tới nó; viết xong anchor thì DỪNG HẲN. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`
       : `MỤC TIÊU ${minWords} từ; GIỚI HẠN CỨNG ${maxWords} từ. Khi đạt khoảng ${minWords} từ và cảnh đã có điểm dừng tự nhiên thì phải kết thúc; tuyệt đối không kéo dài vượt ${maxWords} từ. ${DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced}`,
     "Không mở đầu bằng tiêu đề, không giải thích ngoài truyện.",
     "Không lặp lại đoạn kết chương trước; phải tiếp nối nguyên nhân và hệ quả.",
@@ -1619,7 +1644,7 @@ async function generateOneChapter(job) {
     isNsfw ? ("MỨC TRƯỞNG THÀNH: " + (EXPLICIT_PROMPTS[state.explicitLevel] || "")) : "",
     isNsfw ? ageGuardPrompt(state) : "",
     "NHẮC LẠI (bắt buộc, ưu tiên cao nhất — đọc kỹ trước khi viết):\n" +
-      "- Chỉ 1–3 SỰ KIỆN CHÍNH trong chương này, không nhồi thêm biến cố.\n" +
+      (hasBrief ? "- SỰ KIỆN: đúng các nhịp trong gợi ý, mỗi nhịp viết đủ dài; không thêm biến cố lớn ngoài gợi ý.\n" : "- Chỉ 1–3 SỰ KIỆN CHÍNH trong chương này, không nhồi thêm biến cố.\n") +
       "- GIỚI HẠN CỨNG: TỐI ĐA 4 NHÂN VẬT CÓ TÊN RIÊNG xuất hiện trực tiếp (có thoại/hành động cụ thể) trong CẢ CHƯƠNG, tính cả nhân vật chính. Người qua đường/đám đông không tên không tính. Nếu là chương mở đầu, KHÔNG dồn hết dàn nhân vật vào chương 1 — chỉ ai trực tiếp tham gia 1-3 sự kiện chính của chương này, người còn lại để dành cho chương sau.\n" +
       "- Ưu tiên dùng nhân vật đã liệt kê ở mục NHÂN VẬT QUAN TRỌNG phía trên; chỉ tạo nhân vật mới khi thực sự cần và phải có lý do/vai trò rõ ràng.\n" +
       (((state.characters || []).filter(c => !c.dead).length === 0) ? "- CHƯA CÓ NHÂN VẬT PHỤ NÀO ĐƯỢC KHAI BÁO TRƯỚC. Nếu cần người ngoài nhân vật chính, ưu tiên nhân vật KHÔNG TÊN RIÊNG (chức danh chung chung). Chỉ đặt tên riêng nếu họ thực sự sẽ quay lại các chương sau.\n" : "") +
@@ -1638,7 +1663,8 @@ async function generateOneChapter(job) {
       state.nextChapterHint ? ("GỢI Ý: " + String(state.nextChapterHint).trim()) : "",
       "===== HẾT KẾ HOẠCH =====",
       "LUẬT BÁM KẾ HOẠCH: (1) Đi theo đúng thứ tự các ý ở trên. (2) Được thêm cảnh phụ, thoại, nội tâm, chi tiết đời thường BÊN TRONG các ý của kế hoạch; không thêm biến cố lớn, nhân vật quan trọng mới, arc mới hay manh mối để dành chương sau. (3) Ý cuối cùng / Ending Anchor là ĐIỂM KẾT CHƯƠNG: chỉ viết tới nó ở cuối chương, sau khi đã đủ độ dài; viết xong thì DỪNG HẲN, không viết thêm đoạn nào sau nó, không thêm cảnh kế tiếp, không tóm tắt, không dự báo.",
-      closingBeat ? ("CÚ CHỐT BẮT BUỘC LÀ CÂU/CẢNH CUỐI CÙNG CỦA CHƯƠNG: " + closingBeat) : "",
+      hasBrief ? buildLengthPlan(state.nextChapterHint || state.directive, minWords) : "",
+    closingBeat ? ("CÚ CHỐT BẮT BUỘC LÀ CÂU/CẢNH CUỐI CÙNG CỦA CHƯƠNG: " + closingBeat) : "",
       "Câu cuối chương phải là câu hoàn chỉnh, kết thúc bằng dấu câu."
     ].filter(Boolean).join("\n") : ""
   ].filter(Boolean).join("\n\n");

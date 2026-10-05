@@ -15,6 +15,31 @@ function chapterWordLimits(st) {
   return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
+// V12.23: KẾ HOẠCH ĐỘ DÀI — chia ngân sách từ cho từng nhịp của gợi ý để AI không nén mỗi nhịp thành vài đoạn rồi kết sớm.
+function buildLengthPlan(brief, target) {
+  const raw = String(brief || "").trim();
+  if (!raw || !target) return "";
+  let beats = raw.split(/\n+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 3) beats = raw.split(/(?<=[.!?…])\s+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 2) return "";
+  const isEnd = (x) => /^(chương\s+)?kết thúc|kết chương|cuối chương/i.test(x);
+  const weights = beats.map(x => isEnd(x) ? 0.5 : 1);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const goal = Math.round(target * 1.05);
+  const lines = beats.map((x, i) => {
+    const w = Math.max(100, Math.round((goal * weights[i] / sum) / 50) * 50);
+    const label = x.length > 70 ? x.slice(0, 70).replace(/\s+\S*$/, "") + "…" : x;
+    return (i + 1) + ") " + label + " ≈ " + w + " từ";
+  });
+  return [
+    "===== KẾ HOẠCH ĐỘ DÀI (BẮT BUỘC — lý do chương hay bị ngắn là nén mỗi nhịp thành vài đoạn) =====",
+    "Chia chương thành " + beats.length + " phần theo ĐÚNG thứ tự gợi ý, mỗi phần viết ĐỦ ngân sách từ (tổng ≈ " + goal + " từ):",
+    lines.join("\n"),
+    "Mỗi phần phải có: bối cảnh/không khí, hành động từng bước, hội thoại, nội tâm + cảm giác, phản ứng và hệ quả. CẤM tóm tắt một phần thành 1–2 đoạn hay nhảy cóc thời gian. Chỉ viết phần cuối cùng khi cộng dồn đã gần đủ " + goal + " từ; nếu thấy mới được khoảng " + Math.round(target * 0.9) + " từ thì mở rộng các phần giữa chứ KHÔNG kết chương.",
+    "===== HẾT KẾ HOẠCH ĐỘ DÀI ====="
+  ].join("\n");
+}
+
 function trimToWordLimit(text, maxWords) {
   // V12.14: cắt theo vị trí ký tự để GIỮ NGUYÊN xuống dòng/đoạn (bản cũ split+join làm mất toàn bộ đoạn văn/thoại).
   const s = String(text || "").trim();

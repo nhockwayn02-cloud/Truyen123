@@ -989,6 +989,31 @@ function chapterWordLimits(st) {
   return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
+// V12.23: KẾ HOẠCH ĐỘ DÀI — chia ngân sách từ cho từng nhịp của gợi ý để AI không nén mỗi nhịp thành vài đoạn rồi kết sớm.
+function buildLengthPlan(brief, target) {
+  const raw = String(brief || "").trim();
+  if (!raw || !target) return "";
+  let beats = raw.split(/\n+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 3) beats = raw.split(/(?<=[.!?…])\s+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 2) return "";
+  const isEnd = (x) => /^(chương\s+)?kết thúc|kết chương|cuối chương/i.test(x);
+  const weights = beats.map(x => isEnd(x) ? 0.5 : 1);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const goal = Math.round(target * 1.05);
+  const lines = beats.map((x, i) => {
+    const w = Math.max(100, Math.round((goal * weights[i] / sum) / 50) * 50);
+    const label = x.length > 70 ? x.slice(0, 70).replace(/\s+\S*$/, "") + "…" : x;
+    return (i + 1) + ") " + label + " ≈ " + w + " từ";
+  });
+  return [
+    "===== KẾ HOẠCH ĐỘ DÀI (BẮT BUỘC — lý do chương hay bị ngắn là nén mỗi nhịp thành vài đoạn) =====",
+    "Chia chương thành " + beats.length + " phần theo ĐÚNG thứ tự gợi ý, mỗi phần viết ĐỦ ngân sách từ (tổng ≈ " + goal + " từ):",
+    lines.join("\n"),
+    "Mỗi phần phải có: bối cảnh/không khí, hành động từng bước, hội thoại, nội tâm + cảm giác, phản ứng và hệ quả. CẤM tóm tắt một phần thành 1–2 đoạn hay nhảy cóc thời gian. Chỉ viết phần cuối cùng khi cộng dồn đã gần đủ " + goal + " từ; nếu thấy mới được khoảng " + Math.round(target * 0.9) + " từ thì mở rộng các phần giữa chứ KHÔNG kết chương.",
+    "===== HẾT KẾ HOẠCH ĐỘ DÀI ====="
+  ].join("\n");
+}
+
 function trimToWordLimit(text, maxWords) {
   // V12.14: cắt theo vị trí ký tự để GIỮ NGUYÊN xuống dòng/đoạn (bản cũ split+join làm mất toàn bộ đoạn văn/thoại).
   const s = String(text || "").trim();
@@ -6656,7 +6681,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
       isRegen ? ("\nVIẾT LẠI chương " + chapterNumber + ". Chế độ: " + (regenInstructions[regenMode]||regenInstructions.full)) : "",
       vocabBlock ? ("\n" + vocabBlock) : "",
       "",
-      "ĐỘ DÀI & TỰ DO SÁNG TÁC: mục tiêu " + (state.minChapterWords || 5000) + " từ, tối thiểu " + Math.round((state.minChapterWords || 5000) * 0.95) + " từ. GỢI Ý/BRIEF LÀ XƯƠNG SỐNG, không phải kịch bản từng câu: bạn được TỰ DO sáng tác phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên và dài. Mỗi ý/nhịp trong brief phải thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả), không tóm tắt, không nhảy cóc thời gian. Mọi cảnh phụ phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI; không lặp ý, không độn chữ. GIỚI HẠN: giữ 1–3 sự kiện chính; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành chương sau, không đổi hướng truyện. ENDING ANCHOR (điểm kết của brief) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới ở ĐOẠN CUỐI sau khi đã đủ độ dài; viết xong thì DỪNG HẲN.",
+      "ĐỘ DÀI & TỰ DO SÁNG TÁC: mục tiêu " + (state.minChapterWords || 5000) + " từ, tối thiểu " + Math.round((state.minChapterWords || 5000) * 0.95) + " từ. GỢI Ý/BRIEF LÀ XƯƠNG SỐNG, không phải kịch bản từng câu: bạn được TỰ DO sáng tác phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên và dài. Mỗi ý/nhịp trong brief phải thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả), không tóm tắt, không nhảy cóc thời gian. Mọi cảnh phụ phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI; không lặp ý, không độn chữ. GIỚI HẠN: chỉ các sự kiện chính có trong brief, không thêm biến cố lớn ngoài brief; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành chương sau, không đổi hướng truyện. ENDING ANCHOR (điểm kết của brief) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới ở ĐOẠN CUỐI sau khi đã đủ độ dài; viết xong thì DỪNG HẲN.",
       "CHỐNG LẶP: Không lặp sự kiện, cách giải quyết, cấu trúc, cụm từ, hình ảnh đã dùng.",
       state.pronounRules ? ("\nQUY TẮC XƯNG HÔ:\n" + state.pronounRules) : "",
       usingNsfw ? ("\n" + EROTIC_STYLE_PROMPT) : "",
@@ -6671,7 +6696,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
       "3. Tiếp nối liền mạch từ đoạn kết chương trước.",
       "4. Xưng hô nhất quán.",
       "5. Không lặp ý, không lặp câu.",
-      "6. MỖI CHƯƠNG CHỈ 1–3 SỰ KIỆN CHÍNH; không nhồi biến cố mới ngoài ngân sách.",
+      ((state.directive || state.nextChapterHint) ? "6. SỰ KIỆN: đúng các nhịp trong brief, mỗi nhịp phải viết đủ dài; không thêm biến cố lớn ngoài brief." : "6. MỖI CHƯƠNG CHỈ 1–3 SỰ KIỆN CHÍNH; không nhồi biến cố mới ngoài ngân sách."),
       "7. MỖI NHÂN VẬT XUẤT HIỆN PHẢI CÓ LÝ DO + VAI TRÒ; ưu tiên nhân vật đã có ở danh sách NHÂN VẬT ĐÃ CÓ TRONG TRUYỆN phía trên, không tùy tiện tạo nhân vật quan trọng mới.",
       "8. MIÊU TẢ: khi nhân vật mới xuất hiện hoặc cảnh mới mở, TẢ ngoại hình + không khí qua chi tiết cụ thể.",
       "9. BỐ CỤC: chia thành nhiều đoạn ngắn 2–4 câu (tối đa ~90 từ/đoạn), các đoạn cách nhau MỘT DÒNG TRỐNG. Mỗi lượt thoại nằm trên MỘT ĐOẠN RIÊNG (mở bằng dấu “ hoặc —). Đổi cảnh/đổi người nói/đổi nhịp thì xuống đoạn mới. TUYỆT ĐỐI không viết một khối văn liền dài.",
@@ -6687,6 +6712,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
         "- Đạt độ dài bằng cách đào sâu diễn biến bên trong brief (không bơm tuyến khác, không kéo dài hậu cảnh sau điểm kết). Chỉ kết khi đã đủ độ dài VÀ đã tới Ending Anchor; viết xong anchor thì dừng.",
         "- Trước khi kết thúc, tự kiểm tra: (1) đã triển khai đủ các điểm người dùng yêu cầu chưa; (2) đã đi tới mốc kết thúc chưa; (3) có tự thêm tuyến/nhân vật/biến cố ngoài brief không."
       ].join("\n") : "",
+      buildLengthPlan(state.nextChapterHint || state.directive, (state.minChapterWords || 5000)),
       (state.mainCharProfile && state.mainCharProfile.name) ? ("10. NHÂN VẬT CHÍNH BẮT BUỘC LÀ TRUNG TÂM CHƯƠNG NÀY: " + state.mainCharProfile.name + (state.mainCharProfile.appearance ? (" — " + String(state.mainCharProfile.appearance).slice(0,150)) : "") + ". TUYỆT ĐỐI không viết chương mà thiếu hẳn nhân vật này, và không đổi tên/nhầm sang nhân vật khác.") : "",
       usingNsfw ? "7. CẢNH 18+ ƯU TIÊN CAO NHẤT — đủ 4 lớp: cơ thể (số đo hồ sơ) + cảm giác thể xác + nội tâm đa lớp + âm thanh/nhịp. Cấm chỉ kể hành động bên ngoài. Cấm bỏ cảm giác và nội tâm." : "7. (không có yêu cầu 18+ đặc biệt)",
       "8. Định dạng:",
