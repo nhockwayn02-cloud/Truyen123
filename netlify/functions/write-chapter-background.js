@@ -112,6 +112,36 @@ function buildLengthPlan(brief, target) {
   ].join("\n");
 }
 
+// V12.23: MỞ RỘNG CUỐI — khi đã hết lượt viết thêm mà chương vẫn thiếu từ, nhờ AI viết lại TOÀN BỘ chương dài hơn (giữ nguyên sự kiện + điểm kết).
+function buildExpandPrompt(o) {
+  const wc = o.wc, goal = o.goal, pct = Math.max(5, Math.round((goal * 1.04 / Math.max(1, wc) - 1) * 100));
+  const brief = [o.directive ? ("MỆNH LỆNH: " + String(o.directive).trim()) : "", o.hint ? ("GỢI Ý: " + String(o.hint).trim()) : ""].filter(Boolean).join("\n");
+  return [
+    "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU.",
+    "MỞ RỘNG CHƯƠNG: bản hiện tại chỉ " + wc + " từ, CHƯA ĐỦ độ dài. Cần tối thiểu " + goal + " từ (mục tiêu " + o.target + ", tuyệt đối không vượt " + o.maxWords + ").",
+    "Hãy VIẾT LẠI TOÀN BỘ chương thành bản DÀI HƠN khoảng +" + pct + "% (≥ " + goal + " từ).",
+    "CÁCH MỞ RỘNG: giữ NGUYÊN thứ tự, mọi sự kiện, mọi lời thoại quan trọng, giọng văn, POV, xưng hô và ĐIỂM KẾT CHƯƠNG. Với MỖI cảnh: thêm không khí/bối cảnh, hành động từng bước, hội thoại, nội tâm, giác quan, phản ứng và hệ quả. Đoạn nào đang kể tóm tắt/lướt nhanh thì viết thành cảnh đầy đủ. Cảnh nào ngắn nhất thì mở rộng nhiều nhất.",
+    "CẤM: bỏ hoặc rút gọn bất kỳ đoạn nào; thêm biến cố lớn, nhân vật quan trọng mới, arc mới; lặp ý hoặc độn chữ; đổi điểm kết chương; chèn ghi chú/giải thích.",
+    o.style || "",
+    brief ? ("===== KẾ HOẠCH NGƯỜI DÙNG (không đổi) =====\n" + brief + (o.closing ? ("\nENDING ANCHOR: " + o.closing) : "") + "\n===== HẾT =====") : "",
+    "===== BẢN HIỆN TẠI (" + wc + " từ) =====",
+    String(o.text || ""),
+    "===== HẾT BẢN HIỆN TẠI =====",
+    "CHỈ TRẢ VỀ toàn bộ chương đã mở rộng (không tiêu đề, không 'NỘI DUNG:', không giải thích)."
+  ].filter(Boolean).join("\n");
+}
+
+function acceptExpandedChapter(oldText, newText, maxWords) {
+  let t = String(newText || "").trim();
+  t = t.replace(/^\s*(?:TIÊU ĐỀ|TITLE)\s*:\s*[^\n]+\n+/i, "").replace(/^\s*NỘI DUNG\s*:\s*/i, "").trim();
+  const ow = countWords(oldText), nw = countWords(t);
+  if (!t || nw < 100) return { ok: false, reason: "AI trả rỗng/quá ngắn" };
+  if (nw < ow * 0.9) return { ok: false, reason: "bản mở rộng ngắn hơn bản gốc (" + nw + " < " + ow + " từ)" };
+  if (nw < ow + 120) return { ok: false, reason: "bản mở rộng không dài hơn đáng kể (" + nw + " so với " + ow + " từ)" };
+  const cap = trimToWordLimit(t, maxWords);
+  return { ok: true, text: cap.text, words: countWords(cap.text), trimmed: cap.trimmed };
+}
+
 function trimToWordLimit(text, maxWords) {
   // V12.14: cắt theo vị trí ký tự để GIỮ NGUYÊN xuống dòng/đoạn (bản cũ split+join làm mất toàn bộ đoạn văn/thoại).
   const s = String(text || "").trim();
@@ -1793,6 +1823,31 @@ async function generateOneChapter(job) {
     } catch (e) { failAttempt("API lỗi — " + e.message); continue; }
   }
   { const dd = dedupeRepeatedScene(text); if (dd.length < text.length) { text = dd; issues.push("Đã cắt phần chương bị viết lặp lại từ đầu"); } }
+  // V12.23: MỞ RỘNG CUỐI — hết lượt viết thêm mà vẫn thiếu từ -> viết lại toàn bộ chương dài hơn (tối đa 2 lần).
+  for (let ex = 1; ex <= 2; ex++) {
+    const w0 = countWords(text);
+    if (w0 >= loopGoal || w0 >= maxWords || w0 < 800) break;
+    if (writeTimeLeft(isNsfw) < 90000) { issues.push("Bỏ qua mở rộng cuối vì hết ngân sách thời gian của job"); break; }
+    try {
+      const exPrompt = buildExpandPrompt({
+        text, wc: w0, goal: loopGoal, target: minWords, maxWords,
+        directive: state.directive, hint: state.nextChapterHint, closing: closingBeat,
+        style: [DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced, isNsfw ? EROTIC_STYLE_PROMPT : "", isNsfw ? ("MỨC TRƯỞNG THÀNH: " + (EXPLICIT_PROMPTS[state.explicitLevel] || "")) : "", state.pronounRules ? ("QUY TẮC XƯNG HÔ:\n" + state.pronounRules) : ""].filter(Boolean).join("\n")
+      });
+      const rx = await callWithRetry({
+        endpoint: job.apiEndpoint, apiKey: job.apiKey, model,
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: exPrompt }],
+        maxTokens: isNsfw ? 24000 : 16000, temperature: 0.8, totalMs: Math.max(60000, Math.min(420000, writeTimeLeft(isNsfw) - 15000)), creative: true
+      }, 2);
+      let tx = String(rx.text || "");
+      if (detectNonVietnamese(tx)) { issues.push(`Mở rộng cuối #${ex}: AI trả sai ngôn ngữ`); continue; }
+      tx = formatParagraphs(stripForeign(stripThinkingOutput(tx)));
+      const acc = acceptExpandedChapter(text, tx, maxWords);
+      if (!acc.ok) { issues.push(`Mở rộng cuối #${ex}: ${acc.reason}`); continue; }
+      text = acc.text; truncated = false;
+      issues.push(`Mở rộng cuối #${ex}: ${w0} → ${acc.words} từ`);
+    } catch (e) { issues.push(`Mở rộng cuối #${ex}: API lỗi — ${e.message}`); }
+  }
   // V12.22: ĐÃ BỎ bước 'chia đoạn làm dày' (expandChapterInPlace). Độ dài đạt bằng prompt tự do + chèn diễn biến trước đoạn kết (ở vòng viết tiếp phía trên).
   text = formatParagraphs(stripForeign(stripThinkingOutput(text)));
   const _allowNames = (state.characters || []).map(x => x && x.name).filter(Boolean);

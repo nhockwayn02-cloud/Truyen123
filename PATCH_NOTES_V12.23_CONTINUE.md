@@ -16,3 +16,8 @@
 - Thêm "KẾ HOẠCH ĐỘ DÀI" (shared/core.js: buildLengthPlan, dùng chung client + worker): tách gợi ý thành các nhịp, chia ngân sách từ cho từng nhịp (tổng ≈ 105% mục tiêu, nhịp kết chương ≈ nửa ngân sách), đặt ở cuối prompt.
 - Dặn AI: mỗi nhịp phải đủ bối cảnh/hành động/thoại/nội tâm/hệ quả, cấm tóm tắt nhịp thành 1–2 đoạn, chỉ viết nhịp cuối khi đã gần đủ từ, nếu thiếu thì mở rộng phần giữa chứ không kết chương.
 - Khi có gợi ý/mệnh lệnh: bỏ ràng buộc "chỉ 1–3 sự kiện chính" (mâu thuẫn với gợi ý nhiều nhịp), thay bằng "đúng các nhịp trong gợi ý, không thêm biến cố lớn ngoài gợi ý".
+
+# V12.23 – MỞ RỘNG CUỐI (khi vẫn thiếu từ)
+- Sau khi hết lượt Auto-continue mà chương vẫn dưới mục tiêu (95% khi có gợi ý, 100% khi không): app nhờ AI VIẾT LẠI TOÀN BỘ chương dài hơn, giữ nguyên thứ tự/sự kiện/thoại/điểm kết, mở rộng mỗi cảnh (ưu tiên cảnh ngắn nhất). Tối đa 2 lần, cả viết thường và viết nền.
+- Chỉ nhận bản mới khi dài hơn bản cũ ít nhất 120 từ, không ngắn hơn 90% bản cũ, đúng tiếng Việt; vượt giới hạn tối đa thì cắt. Không đạt thì giữ nguyên bản cũ và ghi lý do vào status/chẩn đoán.
+- Hàm dùng chung: buildExpandPrompt, acceptExpandedChapter (shared/core.js); test mới tests/v12_23.test.js.
