@@ -8026,7 +8026,13 @@ async function startBackgroundWrite(){
     try{ res=await fetch(BG_FUNCTIONS_BASE+"/create-job",{method:"POST",headers:_hd,body:_bodyStr,signal:_ac.signal}); }
     catch(e){ if(e&&e.name==="AbortError") throw new Error("create-job không phản hồi sau 45 giây (đã gửi "+Math.round(_bodyStr.length/1024)+" KB). Kiểm tra mạng hoặc Netlify → Functions → create-job → Logs rồi thử lại."); throw e; }
     finally{ clearInterval(_tick); clearTimeout(_kill); }
-    let data={};try{data=await res.json();}catch(e){}
+    /* V12.23: đọc cả thân phản hồi dạng text để lỗi không còn trống ("HTTP 400" trơn) + báo dung lượng/khóa nặng nhất của truyện gửi lên */
+    let _raw=""; try{ _raw=await res.text(); }catch(e){}
+    let data={}; try{ data=JSON.parse(_raw)||{}; }catch(e){}
+    const _heavy=(()=>{ try{ return Object.keys(storyBlob).map(k=>[k,(JSON.stringify(storyBlob[k])||"").length]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>x[0]+" "+Math.round(x[1]/1024)+"KB").join(", "); }catch(e){ return ""; } })();
+    if(!res.ok && !data.error && res.status!==404 && res.status!==401){
+      throw new Error("HTTP "+res.status+(_raw?(" — "+_raw.replace(/\s+/g," ").slice(0,160)):"")+" | đã gửi "+Math.round(_bodyStr.length/1024)+" KB (nặng nhất: "+_heavy+"). Nếu con số này vượt ~4000 KB, Netlify có thể từ chối vì giới hạn 6 MB/request.");
+    }
     if(res.status===401)throw new Error("Sai hoặc thiếu Mã truy cập server (mục 🔒 ở cột thiết lập).");
     if(res.status===404){
       let probe=-1; try{ const pr=await fetch(BG_FUNCTIONS_BASE+"/job-status?jobId=ping&token=x"); const pj=await pr.json().catch(()=>null); probe=(pr.status===404 && !pj)?404:pr.status; }catch(e){}   /* job-status còn chạy sẽ trả JSON ("Job not found"/403...), còn hàm chưa deploy thì trả trang 404 HTML */

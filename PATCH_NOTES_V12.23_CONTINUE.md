@@ -32,3 +32,6 @@
 - create-job trả và ghi log `timings` (payloadKB, purgeMs, saveMs, triggerMs, totalMs). App hiện các số này khi tổng > 6 giây.
 - App đếm giây khi đang tạo job, hiện dung lượng gửi (KB) và tự hủy sau 45 giây với thông báo rõ.
 - Sửa nhãn phiên bản ở đầu app thành v12.23.
+
+# V12.23 – "Lỗi gửi job: HTTP 400" trơn
+- Lỗi gửi job giờ kèm thân phản hồi của server (nếu có), dung lượng đã gửi và 3 khóa truyện nặng nhất. Các lỗi 404/401 vẫn giữ thông báo riêng.
