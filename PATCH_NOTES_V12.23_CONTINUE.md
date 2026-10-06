@@ -35,3 +35,9 @@
 
 # V12.23 – "Lỗi gửi job: HTTP 400" trơn
 - Lỗi gửi job giờ kèm thân phản hồi của server (nếu có), dung lượng đã gửi và 3 khóa truyện nặng nhất. Các lỗi 404/401 vẫn giữ thông báo riêng.
+
+# V12.23 – Sửa HTTP 400 "đã gửi 9240 KB" (payload quá nặng)
+- Nguyên nhân: mỗi chương mang theo tới 7–10 bản chụp trạng thái (stateSnapshots, mỗi bản là bản sao cả thế giới/nhân vật) + versions cũ; truyện 8 chương => ~8,4 MB chỉ riêng chapters, vượt giới hạn 6 MB/request của Netlify.
+- Client không gửi stateSnapshots/stateSnapshot/versions của chương cũ lên server (worker không dùng). Khi hợp nhất kết quả job, client khôi phục các trường này từ bản local (khớp theo vị trí + tiêu đề) nên không mất lịch sử snapshot/phiên bản.
+- Nếu payload vẫn > 5 MB: báo lỗi rõ ngay tại client (kèm 3 khóa nặng nhất) thay vì gửi rồi nhận HTTP 400.
+- Test mới: tests/e2e_bg_slim.py (7 ca).

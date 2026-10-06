@@ -7978,6 +7978,7 @@ const BG_FUNCTIONS_BASE = "/.netlify/functions"; // khi deploy Netlify sẽ đú
 // Netlify Background Function tối đa 15 phút (DEADLINE trong write-chapter-background.js = 13.5 phút).
 // Cộng thêm thời gian trigger + polling trễ 12s → coi job là "có thể đã chết" nếu quá ngưỡng này mà vẫn pending/running.
 const BG_JOB_STALE_MS = 18 * 60 * 1000;
+const BG_HEAVY_CHAPTER_KEYS = ["stateSnapshots","stateSnapshot","versions"];   // lịch sử nặng của từng chương — không gửi lên server
 
 function getBgStatusEl(){ return $ID("bgJobStatus"); }
 
@@ -8007,6 +8008,15 @@ async function startBackgroundWrite(){
   }
   const storyBlob={};
   Object.keys(state).forEach(k=>{if(!GLOBAL_KEYS.includes(k))storyBlob[k]=state[k];});
+  /* V12.23: mỗi chương mang theo tới 7–10 bản chụp trạng thái (stateSnapshots, mỗi bản là bản sao cả thế giới/nhân vật) + các phiên bản cũ (versions)
+     -> truyện 8 chương nặng ~9 MB, vượt giới hạn 6 MB/request của Netlify (HTTP 400). Worker không dùng các trường này của chương cũ:
+     bỏ khỏi payload; khi hợp nhất kết quả, client tự khôi phục lại từ bản local (xem mergeBackgroundChapter). */
+  if(Array.isArray(storyBlob.chapters)) storyBlob.chapters=storyBlob.chapters.map(ch=>{
+    if(!ch||typeof ch!=="object") return ch;
+    const o=Object.assign({},ch);
+    BG_HEAVY_CHAPTER_KEYS.forEach(k=>{ delete o[k]; });
+    return o;
+  });
   ["minChapterWords","descriptionLevel","explicitLevel","nsfwMode","nsfwAutoThreshold","chapterMatureFocus","modelNsfw","advancedRules","includeScenesInPrompt","autoContinueMax"].forEach(k=>{if(state[k]!==undefined)storyBlob[k]=state[k];});
   // Background phải giữ nguyên lựa chọn NSFW của người dùng, không tự reset về false.
   // "always" luôn ép model NSFW; "mature_only" ép khi truyện đã đánh dấu trưởng thành.
@@ -8020,6 +8030,10 @@ async function startBackgroundWrite(){
     const _pc=getAppPasscode(); const _hd={"Content-Type":"application/json"}; if(_pc)_hd["X-App-Passcode"]=_pc;
     /* V12.23: đếm giây + tự hủy sau 45s để không treo vô hạn ở "Đang tạo job…" */
     const _t0=Date.now(), _bodyStr=JSON.stringify(payload), _ac=new AbortController();
+    if(_bodyStr.length>5000000){
+      const _hv=Object.keys(storyBlob).map(k=>[k,(JSON.stringify(storyBlob[k])||"").length]).sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>x[0]+" "+Math.round(x[1]/1024)+"KB").join(", ");
+      throw new Error("Dữ liệu gửi lên "+Math.round(_bodyStr.length/1024)+" KB, vượt giới hạn ~6 MB/request của Netlify (nặng nhất: "+_hv+"). Hãy xuất backup rồi xóa bớt dữ liệu cũ của truyện, hoặc báo lại để mình tối ưu thêm.");
+    }
     const _tick=setInterval(()=>{ setBgStatus("☁ Đang tạo job an toàn trên server... "+Math.round((Date.now()-_t0)/1000)+"s (gửi "+Math.round(_bodyStr.length/1024)+" KB)",true); },1000);
     const _kill=setTimeout(()=>_ac.abort(),45000);
     let res;
@@ -8145,6 +8159,12 @@ async function mergeBackgroundChapter(statusData,record){
     serverNew.forEach(ch=>{const k=String(ch.title||"")+"|"+(ch.wordCount||0);if(!known.has(k)){state.chapters.push(ch);known.add(k);}});
     setStatus("✓ Background hoàn tất. Đã hợp nhất chương mới mà không ghi đè các chương local.",false);
   }else{
+    /* V12.23: payload đã bỏ stateSnapshots/versions của các chương cũ -> khôi phục từ bản local (khớp theo vị trí + tiêu đề). */
+    incoming.chapters.forEach((ich,i)=>{
+      const lch=state.chapters[i];
+      if(!ich||!lch||i>=base||String(lch.title||"")!==String(ich.title||"")) return;
+      BG_HEAVY_CHAPTER_KEYS.forEach(k=>{ if(ich[k]===undefined && lch[k]!==undefined) ich[k]=lch[k]; });
+    });
     state.chapters=incoming.chapters;
     state.currentChapterIndex=state.chapters.length-1;
   }

@@ -16,6 +16,7 @@ const dir = __dirname; const suites = [
   ["Tích hợp worker: trượt Gate", process.execPath, ["worker.gatefail.js"]],
   ["E2E giao diện", "python3", ["e2e.py"], {}, true],
   ["E2E job nền", "python3", ["e2e_bg.py"], {}, true],
+  ["E2E job nền: payload gọn + khôi phục snapshot", "python3", ["e2e_bg_slim.py"], {}, true],
   ["E2E xóa chương", "python3", ["e2e_delete.py"], {}, true],
 ];
 let failed = 0, skipped = 0;
