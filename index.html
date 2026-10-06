@@ -318,7 +318,7 @@ input[type=range]{padding:4px 0;background:transparent;border:none;}
 <div class="brand-mark"></div>
 <div>
 <div class="brand-name">Xưởng Truyện AI Pro Max</div>
-<div class="brand-sub">v12.21.4 · Auto-continue + Mở rộng chương · Quality Gate dùng chung · Tiếng Việt</div>
+<div class="brand-sub">v12.23 · Auto-continue + Mở rộng chương · Quality Gate dùng chung · Tiếng Việt</div>
 </div>
 </div>
 <div class="topbar-actions">
@@ -8018,7 +8018,14 @@ async function startBackgroundWrite(){
   setBgStatus("☁ Đang tạo job an toàn trên server...",true); $ID("bgWriteBtn").disabled=true;
   try{
     const _pc=getAppPasscode(); const _hd={"Content-Type":"application/json"}; if(_pc)_hd["X-App-Passcode"]=_pc;
-    const res=await fetch(BG_FUNCTIONS_BASE+"/create-job",{method:"POST",headers:_hd,body:JSON.stringify(payload)});
+    /* V12.23: đếm giây + tự hủy sau 45s để không treo vô hạn ở "Đang tạo job…" */
+    const _t0=Date.now(), _bodyStr=JSON.stringify(payload), _ac=new AbortController();
+    const _tick=setInterval(()=>{ setBgStatus("☁ Đang tạo job an toàn trên server... "+Math.round((Date.now()-_t0)/1000)+"s (gửi "+Math.round(_bodyStr.length/1024)+" KB)",true); },1000);
+    const _kill=setTimeout(()=>_ac.abort(),45000);
+    let res;
+    try{ res=await fetch(BG_FUNCTIONS_BASE+"/create-job",{method:"POST",headers:_hd,body:_bodyStr,signal:_ac.signal}); }
+    catch(e){ if(e&&e.name==="AbortError") throw new Error("create-job không phản hồi sau 45 giây (đã gửi "+Math.round(_bodyStr.length/1024)+" KB). Kiểm tra mạng hoặc Netlify → Functions → create-job → Logs rồi thử lại."); throw e; }
+    finally{ clearInterval(_tick); clearTimeout(_kill); }
     let data={};try{data=await res.json();}catch(e){}
     if(res.status===401)throw new Error("Sai hoặc thiếu Mã truy cập server (mục 🔒 ở cột thiết lập).");
     if(res.status===404){
@@ -8032,7 +8039,8 @@ async function startBackgroundWrite(){
     const record={jobId:data.jobId,accessToken:data.accessToken,storyId:state.storyId,baseChapterCount:state.chapters.length,createdAt:Date.now(),briefAtStart:String(state.nextChapterHint||"")};
     localStorage.setItem(BG_JOB_KEY,JSON.stringify(record));
     bgWarnText=(data.warnings&&data.warnings.length)?(" ⚠ "+data.warnings.join(" ")):"";
-    setBgStatus("✓ Job "+data.jobId.slice(-8)+" đang chạy. Có thể tắt iPhone."+bgWarnText,true);
+    const _tm=data.timings||{}; const _slow=(Number(_tm.totalMs)>6000)?(" (server: lưu "+_tm.saveMs+"ms, kích hoạt "+_tm.triggerMs+"ms, tổng "+_tm.totalMs+"ms, gửi "+_tm.payloadKB+" KB)"):"";
+    setBgStatus("✓ Job "+data.jobId.slice(-8)+" đang chạy. Có thể tắt iPhone."+_slow+bgWarnText,true);
     setStatus("☁ Đã gửi background. API key không được trả về status.",false);
     pollBackgroundJob(record);
   }catch(err){setBgStatus("Lỗi gửi job: "+(err.message||err),true);setStatus("Lỗi gửi job: "+(err.message||err),false);}

@@ -26,3 +26,9 @@
 - Client: nếu /create-job trả 404, app dò thêm /job-status để báo đúng nguyên nhân (chưa deploy netlify/functions, mở app ngoài domain Netlify hoặc file://, hay chỉ create-job lỗi build). Poll job-status trả 404 thì báo ngay thay vì im lặng chờ.
 - create-job: kích hoạt write-chapter-background bằng URL env trước; nếu 404 thử tiếp host của chính request (domain tùy chỉnh khác env.URL). Nếu vẫn 404, lỗi nêu rõ URL đã thử.
 - Test mới tests/v12_23_netlify.test.js (4 ca). package.json -> 12.23.0.
+
+# V12.23 – "Đang tạo job…" quá lâu
+- create-job chỉ chờ lệnh kích hoạt background tối đa 8 giây (biến TRIGGER_TIMEOUT_MS); quá hạn thì vẫn trả thành công kèm cảnh báo để app không treo và có thể tắt máy.
+- create-job trả và ghi log `timings` (payloadKB, purgeMs, saveMs, triggerMs, totalMs). App hiện các số này khi tổng > 6 giây.
+- App đếm giây khi đang tạo job, hiện dung lượng gửi (KB) và tự hủy sau 45 giây với thông báo rõ.
+- Sửa nhãn phiên bản ở đầu app thành v12.23.

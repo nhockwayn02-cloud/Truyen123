@@ -44,6 +44,7 @@ exports.handler = async (event) => {
     if (!ep.ok) return jsonResponse(400, { error: ep.error });
     if (JSON.stringify(storyState).length > 8_000_000) return jsonResponse(413, { error:"Story state quá lớn. Hãy backup/nén chương cũ trước khi gửi background." });
 
+    const T0 = Date.now(); const timings = { payloadKB: Math.round((event.body || "").length / 1024) };
     const store = getJobStore(event);
     await sec.purgeOldJobs(store); // xoá job quá hạn (mặc định 48 giờ, chỉnh bằng JOB_TTL_HOURS)
     const jobId = "job_" + Date.now().toString(36) + "_" + crypto.randomBytes(6).toString("hex");
@@ -74,7 +75,10 @@ exports.handler = async (event) => {
       error:null,
       progress:"Đang chờ bắt đầu..."
     };
+    timings.purgeMs = Date.now() - T0;
+    const T1 = Date.now();
     await store.setJSON(jobId, job);
+    timings.saveMs = Date.now() - T1;
 
     // V12.23: thử URL site (env) trước; nếu 404 thì thử đúng host đã nhận request này (domain tùy chỉnh/branch deploy có thể khác env.URL).
     const hdrs = event.headers || {};
@@ -84,16 +88,27 @@ exports.handler = async (event) => {
     if (!bases.length) throw new Error("Không xác định được URL Netlify để kích hoạt background function.");
 
     // Background Function trả 202 ngay; await ở đây chỉ đảm bảo request kích hoạt đã được gửi.
-    let trigger = null, triedUrl = "";
+    let trigger = null, triedUrl = "", triggerSlow = false;
+    const T2 = Date.now();
     for (const b of bases) {
       triedUrl = b + "/.netlify/functions/write-chapter-background";
-      trigger = await fetch(triedUrl, {
-        method:"POST",
-        headers:{"Content-Type":"application/json","X-Worker-Token":workerToken},
-        body:JSON.stringify({jobId, workerToken})
-      });
+      // Background Function bình thường trả 202 trong < 1 giây. Chờ tối đa 8 giây rồi trả lời app (job vẫn được theo dõi bằng job-status)
+      // để người dùng không bị treo ở "Đang tạo job…" và có thể tắt máy.
+      const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), Number(process.env.TRIGGER_TIMEOUT_MS) || 8000);
+      try {
+        trigger = await fetch(triedUrl, {
+          method:"POST",
+          headers:{"Content-Type":"application/json","X-Worker-Token":workerToken},
+          body:JSON.stringify({jobId, workerToken}),
+          signal: ac.signal
+        });
+      } catch (e) {
+        if (e && e.name === "AbortError") { triggerSlow = true; trigger = { ok:true, status:202, text: async()=>"" }; }
+        else throw e;
+      } finally { clearTimeout(timer); }
       if (trigger.ok || trigger.status === 202 || trigger.status !== 404) break;
     }
+    timings.triggerMs = Date.now() - T2;
     if (!trigger.ok && trigger.status !== 202) {
       const t = await trigger.text().catch(()=>"");
       const hint404 = trigger.status === 404 ? " — không tìm thấy hàm write-chapter-background ở " + triedUrl + ". Vào Netlify → Functions xem hàm này có được deploy không (thiếu thư mục netlify/functions hoặc build hàm bị lỗi)." : "";
@@ -102,11 +117,16 @@ exports.handler = async (event) => {
       return jsonResponse(502, { error:job.error });
     }
 
+    timings.totalMs = Date.now() - T0;
+    console.log("[create-job] timings", JSON.stringify(timings));
+    const warnList = sec.securityWarnings().slice();
+    if (triggerSlow) warnList.push("Lệnh kích hoạt viết nền chưa phản hồi sau 8 giây — job vẫn được theo dõi; nếu sau vài phút vẫn 'pending' hãy kiểm tra Netlify → Functions → write-chapter-background.");
     return jsonResponse(200, {
       success:true,
       jobId,
       accessToken,
-      warnings: sec.securityWarnings(),
+      timings,
+      warnings: warnList,
       message:"Job đã được tạo. Có thể đóng/tắt iPhone; khi mở lại app sẽ tự kiểm tra và đồng bộ."
     });
   } catch (err) {
