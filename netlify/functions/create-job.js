@@ -76,18 +76,28 @@ exports.handler = async (event) => {
     };
     await store.setJSON(jobId, job);
 
-    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.DEPLOY_URL || "";
-    if (!siteUrl) throw new Error("Không xác định được URL Netlify để kích hoạt background function.");
+    // V12.23: thử URL site (env) trước; nếu 404 thì thử đúng host đã nhận request này (domain tùy chỉnh/branch deploy có thể khác env.URL).
+    const hdrs = event.headers || {};
+    const reqHost = String(hdrs["x-forwarded-host"] || hdrs.host || hdrs.Host || "").split(",")[0].trim();
+    const envUrl = String(process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.DEPLOY_URL || "").replace(/\/+$/, "");
+    const bases = [envUrl, reqHost ? ("https://" + reqHost) : ""].filter((v, i, a) => v && a.indexOf(v) === i);
+    if (!bases.length) throw new Error("Không xác định được URL Netlify để kích hoạt background function.");
 
     // Background Function trả 202 ngay; await ở đây chỉ đảm bảo request kích hoạt đã được gửi.
-    const trigger = await fetch(siteUrl + "/.netlify/functions/write-chapter-background", {
-      method:"POST",
-      headers:{"Content-Type":"application/json","X-Worker-Token":workerToken},
-      body:JSON.stringify({jobId, workerToken})
-    });
+    let trigger = null, triedUrl = "";
+    for (const b of bases) {
+      triedUrl = b + "/.netlify/functions/write-chapter-background";
+      trigger = await fetch(triedUrl, {
+        method:"POST",
+        headers:{"Content-Type":"application/json","X-Worker-Token":workerToken},
+        body:JSON.stringify({jobId, workerToken})
+      });
+      if (trigger.ok || trigger.status === 202 || trigger.status !== 404) break;
+    }
     if (!trigger.ok && trigger.status !== 202) {
       const t = await trigger.text().catch(()=>"");
-      job.status="failed"; job.error=`Không kích hoạt được background (${trigger.status}): ${t.slice(0,300)}`; job.updatedAt=Date.now();
+      const hint404 = trigger.status === 404 ? " — không tìm thấy hàm write-chapter-background ở " + triedUrl + ". Vào Netlify → Functions xem hàm này có được deploy không (thiếu thư mục netlify/functions hoặc build hàm bị lỗi)." : "";
+      job.status="failed"; job.error=`Không kích hoạt được background (${trigger.status})${hint404}${t ? ": " + t.slice(0,300) : ""}`; job.updatedAt=Date.now();
       await store.setJSON(jobId, job);
       return jsonResponse(502, { error:job.error });
     }

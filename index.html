@@ -8021,6 +8021,13 @@ async function startBackgroundWrite(){
     const res=await fetch(BG_FUNCTIONS_BASE+"/create-job",{method:"POST",headers:_hd,body:JSON.stringify(payload)});
     let data={};try{data=await res.json();}catch(e){}
     if(res.status===401)throw new Error("Sai hoặc thiếu Mã truy cập server (mục 🔒 ở cột thiết lập).");
+    if(res.status===404){
+      let probe=-1; try{ const pr=await fetch(BG_FUNCTIONS_BASE+"/job-status?jobId=ping&token=x"); const pj=await pr.json().catch(()=>null); probe=(pr.status===404 && !pj)?404:pr.status; }catch(e){}   /* job-status còn chạy sẽ trả JSON ("Job not found"/403...), còn hàm chưa deploy thì trả trang 404 HTML */
+      const where=(location.protocol==="file:")?"Bạn đang mở app trực tiếp từ file (file://) — viết nền chỉ chạy khi mở app bằng domain Netlify của bạn."
+        :(probe===404?"Cả create-job lẫn job-status đều 404: site Netlify "+location.origin+" CHƯA deploy thư mục netlify/functions (deploy bằng Git hoặc Netlify CLI cả thư mục, không chỉ index.html), hoặc bạn đang mở app ở domain khác Netlify."
+        :"job-status vẫn chạy nhưng create-job thì không: vào Netlify → Functions xem create-job có bị lỗi build/chưa deploy không, rồi deploy lại bản đầy đủ.");
+      throw new Error("HTTP 404 — không tìm thấy "+BG_FUNCTIONS_BASE+"/create-job tại "+location.origin+". "+where);
+    }
     if(!res.ok||!data.jobId||!data.accessToken)throw new Error(data.error||("HTTP "+res.status));
     const record={jobId:data.jobId,accessToken:data.accessToken,storyId:state.storyId,baseChapterCount:state.chapters.length,createdAt:Date.now(),briefAtStart:String(state.nextChapterHint||"")};
     localStorage.setItem(BG_JOB_KEY,JSON.stringify(record));
@@ -8060,6 +8067,7 @@ function pollBackgroundJob(record){
       const token=encodeURIComponent(record.accessToken||"");
       const res=await fetch(BG_FUNCTIONS_BASE+"/job-status?jobId="+encodeURIComponent(record.jobId)+"&token="+token);
       if(res.status===403){clearInterval(bgPollTimer);bgPollTimer=null;setBgStatus("⚠ Job còn tồn tại nhưng token theo dõi trên iPhone không hợp lệ. Có thể cần mở backup/job cũ để đồng bộ thủ công.",true);return;}
+      if(res.status===404 && !(await res.clone().json().catch(()=>null)||{}).status){clearInterval(bgPollTimer);bgPollTimer=null;setBgStatus("⚠ job-status trả 404 tại "+location.origin+" — hàm Netlify chưa được deploy hoặc job đã bị xóa. Đã dừng theo dõi; kiểm tra Netlify → Functions rồi tạo job mới.",true);return;}
       if(!res.ok){
         if(age>BG_JOB_STALE_MS){
           clearInterval(bgPollTimer);bgPollTimer=null;

@@ -21,3 +21,8 @@
 - Sau khi hết lượt Auto-continue mà chương vẫn dưới mục tiêu (95% khi có gợi ý, 100% khi không): app nhờ AI VIẾT LẠI TOÀN BỘ chương dài hơn, giữ nguyên thứ tự/sự kiện/thoại/điểm kết, mở rộng mỗi cảnh (ưu tiên cảnh ngắn nhất). Tối đa 2 lần, cả viết thường và viết nền.
 - Chỉ nhận bản mới khi dài hơn bản cũ ít nhất 120 từ, không ngắn hơn 90% bản cũ, đúng tiếng Việt; vượt giới hạn tối đa thì cắt. Không đạt thì giữ nguyên bản cũ và ghi lý do vào status/chẩn đoán.
 - Hàm dùng chung: buildExpandPrompt, acceptExpandedChapter (shared/core.js); test mới tests/v12_23.test.js.
+
+# V12.23 – Lỗi 404 khi viết nền (Netlify)
+- Client: nếu /create-job trả 404, app dò thêm /job-status để báo đúng nguyên nhân (chưa deploy netlify/functions, mở app ngoài domain Netlify hoặc file://, hay chỉ create-job lỗi build). Poll job-status trả 404 thì báo ngay thay vì im lặng chờ.
+- create-job: kích hoạt write-chapter-background bằng URL env trước; nếu 404 thử tiếp host của chính request (domain tùy chỉnh khác env.URL). Nếu vẫn 404, lỗi nêu rõ URL đã thử.
+- Test mới tests/v12_23_netlify.test.js (4 ca). package.json -> 12.23.0.
