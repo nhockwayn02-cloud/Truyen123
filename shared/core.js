@@ -637,40 +637,93 @@ function extractClosingBeat(text) {
   return "";
 }
 
-// V12.24: ENDING-ANCHOR GATE — không coi "đủ số từ" là đã hoàn thành nếu brief còn mốc kết chưa tới.
-function extractEndingAnchor(text) {
-  const src = String(text || "").trim();
-  if (!src) return "";
-  const explicit = extractClosingBeat(src);
-  if (explicit) return explicit.replace(/^\s*(?:ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)\s*[:：-]?\s*/i, "").trim();
-  const lines = src.split(/\n+/).map(x => x.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim()).filter(Boolean);
-  const candidates = lines.filter(x => x.length >= 30 && !/^(?:gợi ý|mệnh lệnh|outline|chapter outline|arc manager)\s*[:：]?$/i.test(x));
-  return candidates.length ? candidates[candidates.length - 1].slice(0, 500) : "";
+// ===== V12.24: ĐIỂM KẾT CHƯƠNG — vòng viết tiếp trước đây chỉ đếm số từ nên có thể dừng khi chương CHƯA tới điểm kết của gợi ý =====
+// Số lượt "chốt kết" được phép thêm NGOÀI số lượt Auto-continue, chỉ dùng khi chương đủ/gần đủ từ mà vẫn chưa tới điểm kết.
+const ENDING_FINISH_EXTRA = 2;
+
+// Điểm kết cần chạm tới: cú chốt ghi rõ (Ending Anchor, kết chương...) > nhịp cuối của GỢI Ý.
+// MỆNH LỆNH chỉ được dùng khi có cú chốt ghi rõ (mệnh lệnh thường là quy tắc văn phong, nhịp cuối của nó không phải điểm kết cốt truyện).
+function getEndingTarget(hint, directive) {
+  const closing = extractClosingBeat(hint) || extractClosingBeat(directive);
+  if (closing) return closing;
+  const raw = String(hint || "").trim();
+  if (!raw) return "";
+  let beats = raw.split(/\n+/).map(x => x.trim()).filter(x => x.length >= 20);
+  if (beats.length < 2) beats = raw.split(/(?<=[.!?…])\s+/).map(x => x.trim()).filter(x => x.length >= 20);
+  return (beats.length ? beats[beats.length - 1] : raw).slice(0, 500);
 }
-function _anchorTokens(s) {
-  const stop = new Set(["chương","kết","cuối","sau","trước","đến","rồi","và","là","của","cho","một","những","được","trong","với","này","đó","khi","thì","cũng","đã","sẽ","có","về","theo","nhưng","nếu","vào","ra","từ","tại","mà","lại","để","anh","cô","hắn","nàng","hắn","người"]);
-  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w => w.length >= 3 && !stop.has(w));
+
+// Prompt nhờ AI trả lời: chương đã VIẾT TỚI điểm kết chưa (JSON ngắn).
+function buildEndingCheckPrompt(o) {
+  const text = String(o.text || "");
+  const brief = [o.hint ? ("GỢI Ý: " + String(o.hint).trim()) : "", o.directive ? ("MỆNH LỆNH: " + String(o.directive).trim()) : ""].filter(Boolean).join("\n");
+  const body = text.length > 7600 ? (text.slice(0, 600) + "\n[...lược phần giữa...]\n" + text.slice(-7000)) : text;
+  return [
+    "Bạn là biên tập viên kiểm tra tiến độ chương truyện. Nhiệm vụ: xác định chương đã VIẾT TỚI ĐIỂM KẾT người dùng yêu cầu hay CHƯA.",
+    "ĐIỂM KẾT CẦN CHẠM: " + String(o.ending || ""),
+    brief ? ("===== KẾ HOẠCH NGƯỜI DÙNG =====\n" + brief.slice(0, 2500) + "\n===== HẾT =====") : "",
+    "===== CHƯƠNG HIỆN TẠI (" + (o.wc || countWords(text)) + " từ; cuối chương nằm ở cuối khối này) =====",
+    body,
+    "===== HẾT =====",
+    "Chỉ trả JSON một dòng, không giải thích: {\"reached\":true|false,\"missing\":\"...\"}",
+    "- reached=true CHỈ KHI sự kiện/khoảnh khắc của ĐIỂM KẾT đã thực sự được viết ra và nằm ở CUỐI chương (sau đó không còn diễn biến chính nào bị bỏ dở).",
+    "- reached=false nếu chương mới dừng ở một nhịp TRƯỚC điểm kết, đang dừng giữa chừng, hoặc điểm kết chưa xuất hiện.",
+    "- missing: khi reached=false, liệt kê ngắn gọn (tối đa 3 ý, đúng thứ tự) các nhịp trong kế hoạch CHƯA được viết ở bất kỳ đâu trong chương để đi tới điểm kết; khi true thì để \"\"."
+  ].filter(Boolean).join("\n");
 }
-function endingAnchorReached(text, anchor) {
-  const cleanAnchor = String(anchor || "").replace(/^\s*(?:ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)\s*[:：-]?\s*/i, "");
-  const a = _anchorTokens(cleanAnchor);
-  if (a.length < 3) return false;
-  const full = new Set(_anchorTokens(text));
-  const tail = new Set(_anchorTokens(String(text || "").slice(-3500)));
-  const hitFull = a.filter(w => full.has(w)).length / a.length;
-  const hitTail = a.filter(w => tail.has(w)).length / a.length;
-  // Ưu tiên đoạn cuối: một anchor được "đạt" khi các từ khóa cốt lõi đã xuất hiện và đang nằm trong đoạn kết.
-  return hitTail >= 0.72 || (hitTail >= 0.58 && hitFull >= 0.82);
+
+// Đọc kết quả của buildEndingCheckPrompt. reached: true | false | null (không đọc được -> coi là không biết, KHÔNG ép viết thêm).
+function parseEndingCheck(raw) {
+  const s = String(raw || "");
+  let reached = null, missing = "";
+  const mj = s.match(/\{[\s\S]*\}/);
+  if (mj) {
+    try {
+      const o = JSON.parse(mj[0]);
+      if (typeof o.reached === "boolean") reached = o.reached;
+      else if (/^(true|false)$/i.test(String(o.reached))) reached = /^true$/i.test(String(o.reached));
+      if (o.missing) missing = Array.isArray(o.missing) ? o.missing.join("; ") : String(o.missing);
+    } catch (_) {}
+  }
+  if (reached === null) { const m = s.match(/"?reached"?\s*[:=]\s*(true|false)/i); if (m) reached = /true/i.test(m[1]); }
+  if (!missing) { const mm = s.match(/"?missing"?\s*[:=]\s*"([^"]*)"/i); if (mm) missing = mm[1]; }
+  return { reached: reached, missing: missing.trim().slice(0, 600) };
 }
-function endingGateInstruction(anchor) {
-  return anchor ? [
-    "===== ENDING ANCHOR / ĐIỂM KẾT BẮT BUỘC =====",
-    anchor,
-    "Đây là MỐC KẾT của chương, không phải gợi ý tùy chọn.",
-    "Không được dừng chỉ vì đã đạt số từ. Nếu đoạn hiện tại CHƯA thực hiện mốc này, phải viết tiếp liền mạch cho tới khi hoàn thành mốc.",
-    "Được kéo dài các diễn biến đang có bằng cảnh, thoại, nội tâm, phản ứng, chuyển tiếp và hệ quả; CẤM mở arc mới hoặc thêm biến cố lớn chỉ để đủ từ.",
-    "Ngay sau khi thực hiện xong mốc kết này thì DỪNG HẲN, không viết thêm hậu cảnh."
-  ].join("\n") : "";
+
+// Ngân sách từ cho lượt "chốt kết": want = số từ nên viết, cap = trần cứng. minCap > 0 cho phép vượt trần chung một chút để kịp hạ cánh về điểm kết.
+function finishWordBudget(wc, goal, maxWords, minCap) {
+  const cap = Math.max(maxWords - wc, minCap || 0);
+  return { want: Math.max(0, Math.min(Math.max(700, goal - wc), cap)), cap: cap };
+}
+
+// Prompt VIẾT TIẾP ĐỂ CHẠM ĐIỂM KẾT (dùng cho cả viết thường, nút Viết tiếp và viết nền).
+function buildFinishPrompt(o) {
+  const bud = finishWordBudget(o.wc, o.goal, o.maxWords, o.minCap);
+  const brief = [o.directive ? ("MỆNH LỆNH: " + String(o.directive).trim()) : "", o.hint ? ("GỢI Ý: " + String(o.hint).trim()) : ""].filter(Boolean).join("\n");
+  return [
+    "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Giọng tự nhiên.",
+    "",
+    "VIẾT TIẾP chương " + o.chapterNumber + " ĐỂ CHẠM ĐIỂM KẾT. Chương hiện " + o.wc + " từ nhưng CHƯA TỚI điểm kết mà người dùng yêu cầu (không mở chương mới, không tóm tắt).",
+    "ĐIỂM KẾT (phải là cảnh/câu cuối cùng của chương): " + String(o.ending || ""),
+    o.missing ? ("CÁC NHỊP CÒN THIẾU (viết đúng thứ tự): " + o.missing) : "",
+    brief ? ("===== KẾ HOẠCH NGƯỜI DÙNG (chỉ viết nốt các ý CHƯA có trong đoạn đã viết, đúng thứ tự) =====\n" + brief + "\n===== HẾT =====") : "",
+    "QUY TẮC: bắt đầu ngay sau câu cuối của đoạn hiện tại; mỗi nhịp còn thiếu viết thành cảnh đầy đủ (có hành động, thoại, nội tâm, hệ quả), không nhảy cóc; tới ĐIỂM KẾT thì khép chương và DỪNG HẲN — TUYỆT ĐỐI không viết gì sau điểm kết, không mở thêm tình tiết; không thêm biến cố lớn/nhân vật quan trọng ngoài kế hoạch; không viết lại phần đã có; không lặp ý.",
+    "ĐỘ DÀI: khoảng " + bud.want + " từ, TUYỆT ĐỐI không quá " + bud.cap + " từ. Nếu thấy sắp hết ngân sách mà chưa tới điểm kết thì nén các nhịp còn lại để vẫn CHẠM ĐƯỢC điểm kết.",
+    "NGOẠI LỆ: nếu đọc đoạn cuối thấy điểm kết ĐÃ được viết xong rồi thì chỉ trả về đúng một dòng: [ĐÃ XONG]",
+    o.style || "",
+    "",
+    "===== ĐOẠN CUỐI HIỆN TẠI (PHẢI TIẾP NỐI TỪ ĐÂY) =====",
+    String(o.tail || ""),
+    "===== HẾT =====",
+    "",
+    "CHỈ TRẢ VỀ phần viết tiếp (văn xuôi, không tiêu đề, không giải thích). TUYỆT ĐỐI không xuất \"TIÊU ĐỀ:\"/\"NỘI DUNG:\" và không viết lại chương từ đầu."
+  ].filter(x => x !== null && x !== undefined).join("\n");
+}
+
+// Model trả [ĐÃ XONG] = điểm kết thực ra đã được viết rồi (kiểm tra trước nhận nhầm) -> không nối thêm gì.
+function isFinishDoneReply(text) {
+  const t = String(text || "").trim();
+  return t.length < 60 && /ĐÃ\s*XONG/i.test(t);
 }
 
 // ===== V12.17: Quality Gate — phần THUẦN (không gọi AI, không đụng DOM/state toàn cục) =====
