@@ -989,6 +989,82 @@ function chapterWordLimits(st) {
   return { target, hardMax: Math.ceil(target * 1.4) }; // V12.22: nới 1.15 -> 1.4 để chương tự do dài hơn mà không bị cắt mất Ending Anchor
 }
 
+// V12.23: ĐỒNG BỘ viết thường ↔ viết nền — các khối prompt dùng chung (cùng một bản chữ cho cả hai nơi).
+function buildVocabularyBlockFrom(state) {
+  const v = (state && state.vocabulary) || {};
+  const parts = [];
+  if (v.preferred) parts.push("TỪ MUỐN DÙNG: " + v.preferred.replace(/\n/g, ", "));
+  if (v.banned) parts.push("TỪ CẦN TRÁNH: " + v.banned.replace(/\n/g, ", "));
+  if (v.overused) parts.push("CỤM ĐÃ LẶP NHIỀU (tránh dùng lại): " + v.overused.replace(/\n/g, " · "));
+  if (v.anatomy) parts.push("CÁCH GỌI BỘ PHẬN: " + v.anatomy);
+  return parts.length ? parts.join("\n") : "";
+}
+
+function _clipChapterText(t, maxChars) {
+  t = t || "";
+  if (t.length <= maxChars) return t;
+  return t.slice(0, Math.floor(maxChars * 0.3)) + "\n\n[...]\n\n" + t.slice(-Math.floor(maxChars * 0.6));
+}
+// Chương gần (đoạn rút) + tóm tắt chương xa — đúng như viết thường.
+function buildRecentBlocks(priorChapters) {
+  const pc = Array.isArray(priorChapters) ? priorChapters : [];
+  let recentFullText = "";
+  if (pc.length) {
+    const last = pc[pc.length - 1], lastNum = pc.length;
+    recentFullText = "--- Chương " + lastNum + " (đoạn gần, đã rút) ---\n" + _clipChapterText(last.text, 3500);
+    if (pc.length >= 2) {
+      const prev = pc[pc.length - 2];
+      recentFullText = "--- Ch" + (lastNum - 1) + " " + (prev.title || "") + " ---\n" + (prev.summary || _clipChapterText(prev.text, 800)) + "\n\n" + recentFullText;
+    }
+  }
+  let olderSummaries = "";
+  if (pc.length > 2) {
+    const older = pc.slice(0, -2), start = Math.max(0, older.length - 8);
+    olderSummaries = older.slice(start).map((c, i) => "Ch" + (start + i + 1) + ": " + (c.summary || "(chưa tóm tắt)").slice(0, (older.length - start - i) <= 3 ? 900 : 350)).join("\n");
+  }
+  return { recentFullText, olderSummaries };
+}
+
+// Prompt lập KẾ HOẠCH chương. Có brief của người dùng: giữ ĐỦ mọi nhịp (không còn giới hạn 3 sự kiện / 5 beat làm nén gợi ý nhiều nhịp).
+function buildChapterPlanPrompt(o) {
+  const userDirective = String(o.directive || "").trim(), userHint = String(o.hint || "").trim();
+  const hasUserBrief = !!(userDirective || userHint);
+  return [
+    "BẮT BUỘC: TIẾNG VIỆT 100%.", "",
+    "Bạn là biên kịch cho tiểu thuyết dài kỳ. Lập KẾ HOẠCH cho CHƯƠNG " + o.chapterNumber + ".",
+    "",
+    "Bối cảnh:", o.context, "",
+    o.storyControl || "", "",
+    o.recent ? ("Chương gần nhất:\n" + String(o.recent).slice(0, 8000)) : "Chương đầu tiên.", "",
+    o.mainCharName ? ("NHÂN VẬT CHÍNH BẮT BUỘC: " + o.mainCharName + " — PHẢI là nhân vật trung tâm của kế hoạch này.") : "",
+    hasUserBrief ? [
+      "===== YÊU CẦU/GỢI Ý DO NGƯỜI DÙNG VIẾT — NGUỒN SỰ KIỆN ƯU TIÊN CAO =====",
+      userDirective ? ("MỆNH LỆNH:\n" + userDirective) : "",
+      userHint ? ("GỢI Ý:\n" + userHint) : "",
+      "===== HẾT YÊU CẦU NGƯỜI DÙNG =====",
+      "QUY TẮC ĐẶC BIỆT: Phải chuyển ĐẦY ĐỦ mọi chi tiết, hành động, mốc mở đầu, diễn biến và mốc kết thúc mà người dùng đã nêu thành kế hoạch. Không được bỏ sót, rút gọn, gộp nhịp hoặc thay thế chi tiết quan trọng.",
+      "Không tự thêm tuyến truyện, mục tiêu, nhân vật quan trọng, địa điểm mới hoặc biến cố lớn không có trong yêu cầu người dùng. Nếu cần nối các mốc, chỉ dùng diễn biến cầu nối tối thiểu để giữ liền mạch.",
+      "Nếu yêu cầu có ghi rõ bắt đầu tại A và kết thúc tại B, A và B là hai ANCHOR BẮT BUỘC; kế hoạch phải đi từ A đến B và không mở tuyến khác làm lệch trọng tâm.",
+      "Nếu yêu cầu người dùng xung đột với bối cảnh cũ, ưu tiên yêu cầu người dùng mới nhất và đánh dấu phần xung đột trong kế hoạch thay vì tự sửa yêu cầu."
+    ].filter(Boolean).join("\n") : "",
+    hasUserBrief ? "Lập kế hoạch BÁM SÁT BRIEF — số nhịp bằng đúng số nhịp trong brief:" : "Lập kế hoạch theo NGÂN SÁCH SỰ KIỆN — không vượt quá 3 sự kiện chính:",
+    "1. Mục tiêu chương", "2. Xung đột chính",
+    hasUserBrief ? "3. DANH SÁCH CÁC NHỊP/SỰ KIỆN THEO ĐÚNG THỨ TỰ BRIEF (mỗi nhịp ghi: mục đích + diễn biến + hậu quả); KHÔNG gộp, KHÔNG bỏ nhịp nào"
+                 : "3. DANH SÁCH 1-3 SỰ KIỆN CHÍNH (mỗi sự kiện ghi: mục đích + diễn biến + hậu quả)",
+    "4. Nhân vật xuất hiện: BẮT BUỘC có nhân vật chính; TỐI ĐA 4 NHÂN VẬT CÓ TÊN RIÊNG xuất hiện trực tiếp trong cả chương; ưu tiên nhân vật đã có.",
+    "5. Địa điểm",
+    hasUserBrief ? "6. SCENE BEATS: MỖI nhịp của brief là MỘT beat (không giới hạn số beat), ghi gợi ý độ dài từng beat để cả chương đạt mục tiêu từ; KHÔNG tự sinh thêm sự kiện lớn ngoài brief"
+                 : "6. SCENE BEATS (tối đa 5 beat) — chỉ triển khai 1-3 sự kiện trên, KHÔNG tự sinh thêm sự kiện lớn",
+    "7. Kết chương — phải khớp mốc kết thúc người dùng yêu cầu nếu có",
+    "8. Nếu có cảnh trưởng thành: mức intensity + structure, nhưng không thay đổi phạm vi sự kiện người dùng đã chỉ định",
+    "",
+    hasUserBrief ? "QUY TẮC CỨNG: Không thêm sự kiện lớn ngoài brief. Không tạo nhân vật quan trọng mới nếu không có lý do cốt truyện rõ ràng. Nếu có thể dùng nhân vật hiện có thì phải dùng nhân vật hiện có."
+                 : "QUY TẮC CỨNG: Không thêm sự kiện lớn thứ 4. Không tạo nhân vật quan trọng mới nếu không có lý do cốt truyện rõ ràng. Nếu có thể dùng nhân vật hiện có thì phải dùng nhân vật hiện có.",
+    hasUserBrief ? "ƯU TIÊN ĐỘ TRUNG THÀNH VỚI BRIEF: Không 'sáng tạo thêm cho hay'. Nhiệm vụ là chuyển brief thành kế hoạch có thể viết được, không phải mở rộng phạm vi truyện." : "",
+    "KHÔNG viết văn xuôi. Chỉ bullet points."
+  ].filter(Boolean).join("\n");
+}
+
 // V12.23: KẾ HOẠCH ĐỘ DÀI — chia ngân sách từ cho từng nhịp của gợi ý để AI không nén mỗi nhịp thành vài đoạn rồi kết sớm.
 function buildLengthPlan(brief, target) {
   const raw = String(brief || "").trim();
@@ -1086,10 +1162,39 @@ function stripThinkingOutput(text) {
   return t.replace(/^\s+/, '').trim();
 }
 
+// V12.23: xóa câu/đoạn TIẾNG ANH do model "nghĩ to" lẫn vào giữa truyện (vd: "The user wants me to write the bridge section in Vietnamese...").
+// stripThinkingOutput chỉ xử lý khối tiếng Anh Ở ĐẦU output; đoạn chèn/viết tiếp bị ghép giữa chương nên lọt qua.
+const _EN_LEAK_STOP = new Set(["the","and","of","is","are","was","were","that","this","with","for","user","wants","want","write","writing","section","bridge","leaked","should","must","need","needs","will","would","vietnamese","chapter","text","output","response","let","not","but","from","then","now","here","there","scene","story","ending","anchor","insert","continue","paragraph","previous","existing","content","already"]);
+function _isEnglishLeak(seg) {
+  const plain = String(seg).replace(/\s/g, "");
+  if (plain.length < 25) return false;
+  const vi = (String(seg).match(/[\u00C0-\u024F\u1EA0-\u1EF9]/g) || []).length;
+  if (vi / plain.length > 0.04) return false;                      // văn Việt thật có nhiều dấu
+  const toks = String(seg).toLowerCase().match(/[a-z']+/g) || [];
+  if (toks.length < 6) return false;
+  let hits = 0; for (const t of toks) if (_EN_LEAK_STOP.has(t)) hits++;
+  return hits >= 3;
+}
+function removeEnglishLeaksDetailed(text) {
+  const removed = [];
+  if (!text) return { text: text, removed };
+  const lines = String(text).split("\n").map(line => {
+    if (!line.trim()) return line;
+    if (_isEnglishLeak(line)) { removed.push(line.trim().slice(0, 80)); return null; }
+    const sents = line.split(/(?<=[.!?…])\s+/);
+    if (sents.length < 2) return line;
+    const keep = sents.filter(x => { if (_isEnglishLeak(x)) { removed.push(x.trim().slice(0, 80)); return false; } return true; });
+    return keep.length === sents.length ? line : keep.join(" ");
+  }).filter(x => x !== null);
+  return { text: lines.join("\n").replace(/\n{3,}/g, "\n\n"), removed };
+}
+function removeEnglishLeaks(text) { return removeEnglishLeaksDetailed(text).text; }
+
 function stripForeign(text) {
   text = stripThinkingOutput(text); // V12.21
   // V12.10: dọn chữ Hán/Nhật/Hàn/Cyrillic/Thái/Ả Rập/Hindi còn sót (kể cả khi dưới ngưỡng viết lại).
   if (!text) return text;
+  text = removeEnglishLeaks(text);   // V12.23
   let t = String(text)
     .replace(/，/g, ", ").replace(/。/g, ". ").replace(/！/g, "! ").replace(/？/g, "? ").replace(/：/g, ": ").replace(/、/g, ", ")
     .replace(/[\u3400-\u4DBF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0400-\u04FF\u0E00-\u0E7F\u0600-\u06FF\u0900-\u097F]+/g, "");
@@ -1504,6 +1609,42 @@ function extractClosingBeat(text) {
   const sents = src.split(/(?<=[.!?…])\s+/);
   for (let i = sents.length - 1; i >= 0; i--) if (re.test(sents[i])) return sents.slice(i).join(" ").slice(0, 500);
   return "";
+}
+
+// V12.24: ENDING-ANCHOR GATE — không coi "đủ số từ" là đã hoàn thành nếu brief còn mốc kết chưa tới.
+function extractEndingAnchor(text) {
+  const src = String(text || "").trim();
+  if (!src) return "";
+  const explicit = extractClosingBeat(src);
+  if (explicit) return explicit.replace(/^\s*(?:ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)\s*[:：-]?\s*/i, "").trim();
+  const lines = src.split(/\n+/).map(x => x.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim()).filter(Boolean);
+  const candidates = lines.filter(x => x.length >= 30 && !/^(?:gợi ý|mệnh lệnh|outline|chapter outline|arc manager)\s*[:：]?$/i.test(x));
+  return candidates.length ? candidates[candidates.length - 1].slice(0, 500) : "";
+}
+function _anchorTokens(s) {
+  const stop = new Set(["chương","kết","cuối","sau","trước","đến","rồi","và","là","của","cho","một","những","được","trong","với","này","đó","khi","thì","cũng","đã","sẽ","có","về","theo","nhưng","nếu","vào","ra","từ","tại","mà","lại","để","anh","cô","hắn","nàng","hắn","người"]);
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w => w.length >= 3 && !stop.has(w));
+}
+function endingAnchorReached(text, anchor) {
+  const cleanAnchor = String(anchor || "").replace(/^\s*(?:ending\s*anchor|điểm\s*neo\s*kết|anchor\s*kết|cú chốt|câu chốt|chốt chương|chốt cuối|kết thúc chương|kết chương|kết bằng|khép chương|cliffhanger)\s*[:：-]?\s*/i, "");
+  const a = _anchorTokens(cleanAnchor);
+  if (a.length < 3) return false;
+  const full = new Set(_anchorTokens(text));
+  const tail = new Set(_anchorTokens(String(text || "").slice(-3500)));
+  const hitFull = a.filter(w => full.has(w)).length / a.length;
+  const hitTail = a.filter(w => tail.has(w)).length / a.length;
+  // Ưu tiên đoạn cuối: một anchor được "đạt" khi các từ khóa cốt lõi đã xuất hiện và đang nằm trong đoạn kết.
+  return hitTail >= 0.72 || (hitTail >= 0.58 && hitFull >= 0.82);
+}
+function endingGateInstruction(anchor) {
+  return anchor ? [
+    "===== ENDING ANCHOR / ĐIỂM KẾT BẮT BUỘC =====",
+    anchor,
+    "Đây là MỐC KẾT của chương, không phải gợi ý tùy chọn.",
+    "Không được dừng chỉ vì đã đạt số từ. Nếu đoạn hiện tại CHƯA thực hiện mốc này, phải viết tiếp liền mạch cho tới khi hoàn thành mốc.",
+    "Được kéo dài các diễn biến đang có bằng cảnh, thoại, nội tâm, phản ứng, chuyển tiếp và hệ quả; CẤM mở arc mới hoặc thêm biến cố lớn chỉ để đủ từ.",
+    "Ngay sau khi thực hiện xong mốc kết này thì DỪNG HẲN, không viết thêm hậu cảnh."
+  ].join("\n") : "";
 }
 
 // ===== V12.17: Quality Gate — phần THUẦN (không gọi AI, không đụng DOM/state toàn cục) =====
@@ -3611,15 +3752,7 @@ function buildStyleBlock(){
   return parts.length ? parts.join("\n") : "";
 }
 
-function buildVocabularyBlock(){
-  const v = state.vocabulary || {};
-  const parts = [];
-  if(v.preferred) parts.push("TỪ MUỐN DÙNG: " + v.preferred.replace(/\n/g, ", "));
-  if(v.banned) parts.push("TỪ CẦN TRÁNH: " + v.banned.replace(/\n/g, ", "));
-  if(v.overused) parts.push("CỤM ĐÃ LẶP NHIỀU (tránh dùng lại): " + v.overused.replace(/\n/g, " · "));
-  if(v.anatomy) parts.push("CÁCH GỌI BỘ PHẬN: " + v.anatomy);
-  return parts.length ? parts.join("\n") : "";
-}
+function buildVocabularyBlock(){ return buildVocabularyBlockFrom(state); }
 
 function buildSceneHistoryBlock(maxScenes){
   maxScenes = maxScenes || 5;
@@ -5831,42 +5964,94 @@ function checkDuplicates(newText){
 function normalizeStoryControlClient(){ return normalizeStoryControl(state); }
 function storyControlPromptClient(){ return storyControlPrompt(state); }
 
+/* V12.23: prompt viết chương chính — MỘT nguồn duy nhất cho viết thường (index.html) và viết nền (worker, được scripts/sync-shared.js sao chép nguyên văn).
+   o.proseOnly=true: viết nền chỉ nhận văn xuôi (tên chương do hệ thống tạo). */
+function buildMainWritePrompt(o){
+  const { chapterNumber, isRegen, regenIndex, regenMode, descPrompt, explicitPrompt, vocabBlock, usingNsfw, context, lastChapterEnding, recentFullText, olderSummaries, plan } = o;
+  const regenInstructions = {
+      full: "Viết lại toàn bộ chương với văn phong tự nhiên, không lặp ý cũ.",
+      continuity: "Chỉ sửa lỗi continuity, giữ nguyên cốt truyện và giọng văn.",
+      depth: "Giữ sự kiện, đào sâu nội tâm và phản ứng cơ thể.",
+      describe: "Giữ sự kiện, TĂNG CƯỜNG miêu tả: ngoại hình nhân vật, không khí, giác quan, chi tiết nhỏ. Không lặp lại.",
+      world: "Giữ cốt truyện, bổ sung world-building qua giác quan.",
+      pacing: "Giữ sự kiện, cải thiện nhịp.",
+      nsfw_rewrite: "Viết lại với chi tiết 18+ táo bạo, giác quan, nội tâm."
+    };
+
+  return [
+    "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Không tiếng Anh/Trung/Nhật/Hàn.",
+    "GIỌNG VĂN: Tự nhiên như người viết thật. Câu có nhịp, có chỗ ngắn chỗ dài, có khoảng lặng.",
+    "",
+    "Bạn là tiểu thuyết gia chuyên viết truyện dài kỳ tiếng Việt.",
+    "BẮT BUỘC: Bạn đang viết CHƯƠNG THỨ " + chapterNumber + ".",
+    "Truyện hiện có " + o.priorCount + " chương trước đó.",
+    "",
+    "🎨 " + descPrompt,
+    "",
+    "Bối cảnh:", context || "(chưa có — tự sáng tạo hợp lý)", "",
+    storyControlPromptClient(), "",
+    lastChapterEnding ? ("===== ĐOẠN KẾT CHƯƠNG TRƯỚC (PHẢI TIẾP NỐI) =====\n" + lastChapterEnding + "\n===== HẾT =====\n\nChương mới PHẢI bắt đầu từ việc tiếp nối trực tiếp đoạn kết trên.\nĐỊA ĐIỂM MỞ CHƯƠNG — KHÓA CỨNG: đoạn mở đầu PHẢI diễn ra ĐÚNG địa điểm, thời điểm và với đúng những người đang có mặt như trong đoạn kết chương trước (ví dụ chương trước kết ở biệt thự của A thì chương này vẫn bắt đầu ở biệt thự của A). Chỉ được chuyển địa điểm khi đoạn kết đã nói rõ nhân vật sắp rời đi/đến nơi khác, hoặc sau một câu chuyển cảnh rõ ràng (di chuyển + mốc thời gian). Tuyệt đối không nhảy sang nhà/phòng trọ/nơi ở của nhân vật khác ngay từ câu đầu.") : "",
+    recentFullText ? ("\nChương gần (tránh lặp sự kiện / cấu trúc):\n" + recentFullText) : "",
+    olderSummaries ? ("\nTÓM TẮT CHƯƠNG XA:\n" + olderSummaries) : "",
+    plan ? ("\nKẾ HOẠCH CHƯƠNG " + chapterNumber + ":\n" + plan) : "",
+    "\nNGÂN SÁCH SỰ KIỆN — BẮT BUỘC:",
+    "- Toàn chương chỉ có 1–3 SỰ KIỆN CHÍNH. Không thêm sự kiện lớn thứ 4 dù còn dung lượng từ.",
+    "- Các cảnh/beat nhỏ chỉ là bước triển khai, phản ứng hoặc hậu quả của 1–3 sự kiện chính; không được biến thành tuyến sự kiện mới.",
+    "- Nếu chương cần dài hơn, hãy đào sâu diễn biến, đối thoại, nội tâm, nguyên nhân–hậu quả và chi tiết cảnh thay vì nhồi thêm biến cố.",
+    "\nNHÂN VẬT PHỤ — BẮT BUỘC:",
+    "- GIỚI HẠN CỨNG: TỐI ĐA 4 NHÂN VẬT CÓ TÊN RIÊNG xuất hiện TRỰC TIẾP (có lời thoại hoặc hành động cụ thể) trong toàn chương, tính cả nhân vật chính. Đám đông/người qua đường không tên không tính vào số này.",
+    "- Nếu chương 1 hoặc mở đầu một arc mới cần giới thiệu bối cảnh, KHÔNG dồn hết dàn nhân vật vào 1 chương — chỉ giới thiệu những ai TRỰC TIẾP tham gia 1-3 sự kiện chính của CHƯƠNG NÀY; người còn lại để dành cho chương sau.",
+    "- Ưu tiên sử dụng nhân vật đã tồn tại trong hồ sơ truyện (xem mục NHÂN VẬT ĐÃ CÓ TRONG TRUYỆN ở Bối cảnh phía trên); không tùy tiện tạo nhân vật quan trọng mới.",
+    "- Mỗi nhân vật xuất hiện phải có LÝ DO rõ ràng và VAI TRÒ cụ thể đối với một trong 1–3 sự kiện chính.",
+    "- Nếu một nhân vật mới không thực sự cần cho cốt truyện, KHÔNG được tạo chỉ để lấp cảnh, đối thoại hoặc làm nền.",
+    "- Nhân vật mới có vai trò quan trọng chỉ được xuất hiện khi kế hoạch đã chứng minh nhu cầu cốt truyện; nếu không có trong kế hoạch, không tự ý nâng một nhân vật mới thành nhân vật quan trọng.",
+    "- TRƯỚC KHI VIẾT: tự đếm lại số nhân vật có tên riêng dự kiến xuất hiện; nếu quá 4, cắt bớt hoặc chuyển bớt sang không tên.",
+    (relevantCharacters(1).length === 0) ? "- CHƯA CÓ NHÂN VẬT PHỤ NÀO ĐƯỢC KHAI BÁO TRƯỚC. Nếu cảnh cần người ngoài NVC, ưu tiên nhân vật KHÔNG TÊN RIÊNG (chức danh chung: 'người gác cổng', 'cô gái lạ mặt', 'một thương nhân'...). CHỈ đặt tên riêng cho một nhân vật mới khi họ thực sự sẽ quay lại các chương sau; nếu đặt tên, phải cho họ vai trò/lý do rõ ràng." : "",
+    isRegen ? ("\nVIẾT LẠI chương " + chapterNumber + ". Chế độ: " + (regenInstructions[regenMode]||regenInstructions.full)) : "",
+    vocabBlock ? ("\n" + vocabBlock) : "",
+    "",
+    "ĐỘ DÀI & TỰ DO SÁNG TÁC: mục tiêu " + (state.minChapterWords || 5000) + " từ, tối thiểu " + Math.round((state.minChapterWords || 5000) * 0.95) + " từ. GỢI Ý/BRIEF LÀ XƯƠNG SỐNG, không phải kịch bản từng câu: bạn được TỰ DO sáng tác phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên và dài. Mỗi ý/nhịp trong brief phải thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả), không tóm tắt, không nhảy cóc thời gian. Mọi cảnh phụ phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI; không lặp ý, không độn chữ. GIỚI HẠN: chỉ các sự kiện chính có trong brief, không thêm biến cố lớn ngoài brief; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành chương sau, không đổi hướng truyện. ENDING ANCHOR (điểm kết của brief) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới ở ĐOẠN CUỐI sau khi đã đủ độ dài; viết xong thì DỪNG HẲN.",
+    "CHỐNG LẶP: Không lặp sự kiện, cách giải quyết, cấu trúc, cụm từ, hình ảnh đã dùng.",
+    state.pronounRules ? ("\nQUY TẮC XƯNG HÔ:\n" + state.pronounRules) : "",
+    usingNsfw ? ("\n" + EROTIC_STYLE_PROMPT) : "",
+    usingNsfw ? ("\nMỨC 18+ BẮT BUỘC: " + explicitPrompt) : "",
+    state.mature && !usingNsfw ? "Văn phong trưởng thành được phép." : "",
+    "",
+    o.proseOnly ? "QUY TẮC ĐẦU RA: CHỈ viết văn xuôi của chương; tên chương do hệ thống quản lý riêng." : "QUY TẮC TIÊU ĐỀ: Chỉ TÊN CHƯƠNG tiếng Việt, KHÔNG chữ 'Chương', KHÔNG số.",
+    "",
+    "===== NHẮC LẠI =====",
+    "1. 100% TIẾNG VIỆT CÓ DẤU.",
+    o.proseOnly ? "2. Chỉ văn xuôi của chương, không tiêu đề." : "2. Tiêu đề tiếng Việt, không chữ 'Chương', không số.",
+    "3. Tiếp nối liền mạch từ đoạn kết chương trước.",
+    "4. Xưng hô nhất quán.",
+    "5. Không lặp ý, không lặp câu.",
+    ((state.directive || state.nextChapterHint) ? "6. SỰ KIỆN: đúng các nhịp trong brief, mỗi nhịp phải viết đủ dài; không thêm biến cố lớn ngoài brief." : "6. MỖI CHƯƠNG CHỈ 1–3 SỰ KIỆN CHÍNH; không nhồi biến cố mới ngoài ngân sách."),
+    "7. MỖI NHÂN VẬT XUẤT HIỆN PHẢI CÓ LÝ DO + VAI TRÒ; ưu tiên nhân vật đã có ở danh sách NHÂN VẬT ĐÃ CÓ TRONG TRUYỆN phía trên, không tùy tiện tạo nhân vật quan trọng mới.",
+    "8. MIÊU TẢ: khi nhân vật mới xuất hiện hoặc cảnh mới mở, TẢ ngoại hình + không khí qua chi tiết cụ thể.",
+    "9. BỐ CỤC: chia thành nhiều đoạn ngắn 2–4 câu (tối đa ~90 từ/đoạn), các đoạn cách nhau MỘT DÒNG TRỐNG. Mỗi lượt thoại nằm trên MỘT ĐOẠN RIÊNG (mở bằng dấu “ hoặc —). Đổi cảnh/đổi người nói/đổi nhịp thì xuống đoạn mới. TUYỆT ĐỐI không viết một khối văn liền dài.",
+    state.directive ? ("===== BRIEF NGƯỜI DÙNG — ƯU TIÊN CAO NHẤT =====\nMỆNH LỆNH TOÀN VẸN (KHÔNG ĐƯỢC CẮT):\n" + String(state.directive) + "\n===== HẾT MỆNH LỆNH =====") : "",
+    state.nextChapterHint ? ("===== GỢI Ý NGƯỜI DÙNG — PHẢI BÁM ĐẦY ĐỦ =====\n" + String(state.nextChapterHint) + "\n===== HẾT GỢI Ý =====") : "",
+    state.autoNextChapterHint ? ("GỢI Ý TỰ ĐỘNG CHỈ ĐỂ THAM KHẢO — KHÔNG ĐƯỢC GHI ĐÈ/ƯU TIÊN HƠN BRIEF NGƯỜI DÙNG:\n" + String(state.autoNextChapterHint)) : "",
+    (state.directive || state.nextChapterHint) ? [
+      "QUY TẮC BÁM BRIEF NGƯỜI DÙNG:",
+      "- Phải thực hiện ĐẦY ĐỦ từng yêu cầu, chi tiết, hành động và mốc mà người dùng đã ghi; không được bỏ qua chỉ vì kế hoạch tự tạo khác.",
+      "- Nếu người dùng nêu KHÚC ĐẦU và KHÚC KẾT của cùng một cảnh, hai điểm đó là ANCHOR BẮT BUỘC. Viết cầu nối giữa chúng nhưng không được đổi điểm bắt đầu hoặc điểm kết thúc.",
+      "- Được thêm cảnh phụ, thoại, nội tâm, chi tiết đời thường bên trong các sự kiện của brief. Không tự mở tuyến truyện mới, không thêm mục tiêu phụ lớn, không thêm biến cố lớn, không đưa nhân vật mới quan trọng vào nếu brief không yêu cầu.",
+      "- Không dùng phần bối cảnh/threads/foreshadowing để lấn át brief. Những thứ đó chỉ dùng để giữ continuity khi không mâu thuẫn.",
+      "- Đạt độ dài bằng cách đào sâu diễn biến bên trong brief (không bơm tuyến khác, không kéo dài hậu cảnh sau điểm kết). Chỉ kết khi đã đủ độ dài VÀ đã tới Ending Anchor; viết xong anchor thì dừng.",
+      "- Trước khi kết thúc, tự kiểm tra: (1) đã triển khai đủ các điểm người dùng yêu cầu chưa; (2) đã đi tới mốc kết thúc chưa; (3) có tự thêm tuyến/nhân vật/biến cố ngoài brief không."
+    ].join("\n") : "",
+    buildLengthPlan(state.nextChapterHint || state.directive, (state.minChapterWords || 5000)),
+    (state.mainCharProfile && state.mainCharProfile.name) ? ("10. NHÂN VẬT CHÍNH BẮT BUỘC LÀ TRUNG TÂM CHƯƠNG NÀY: " + state.mainCharProfile.name + (state.mainCharProfile.appearance ? (" — " + String(state.mainCharProfile.appearance).slice(0,150)) : "") + ". TUYỆT ĐỐI không viết chương mà thiếu hẳn nhân vật này, và không đổi tên/nhầm sang nhân vật khác.") : "",
+    usingNsfw ? "7. CẢNH 18+ ƯU TIÊN CAO NHẤT — đủ 4 lớp: cơ thể (số đo hồ sơ) + cảm giác thể xác + nội tâm đa lớp + âm thanh/nhịp. Cấm chỉ kể hành động bên ngoài. Cấm bỏ cảm giác và nội tâm." : "7. (không có yêu cầu 18+ đặc biệt)",
+    ...(o.proseOnly ? ["8. Định dạng: CHỈ văn xuôi của chương — KHÔNG xuất 'TIÊU ĐỀ:', 'NỘI DUNG:', markdown, ghi chú hay lời giải thích."] : ["8. Định dạng:", "TIÊU ĐỀ: <tên chương>", "NỘI DUNG:", "<toàn bộ chương>"])
+  ].filter(Boolean).join("\n");
+}
+
 /* ========== BUILD PLAN ========== */
 async function buildChapterPlan(context, recent, chapterNumber){
-  const userDirective = String(state.directive||"").trim();
-  const userHint = String(state.nextChapterHint||"").trim();
-  const hasUserBrief = !!(userDirective || userHint);
-  const prompt = [
-    "BẮT BUỘC: TIẾNG VIỆT 100%.", "",
-    "Bạn là biên kịch cho tiểu thuyết dài kỳ. Lập KẾ HOẠCH cho CHƯƠNG " + chapterNumber + ".",
-    "",
-    "Bối cảnh:", context, "",
-    storyControlPromptClient(), "",
-    recent ? ("Chương gần nhất:\n" + recent.slice(0, 8000)) : "Chương đầu tiên.", "",
-    state.mainCharProfile?.name ? ("NHÂN VẬT CHÍNH BẮT BUỘC: " + state.mainCharProfile.name + " — PHẢI là nhân vật trung tâm của kế hoạch này.") : "",
-    hasUserBrief ? [
-      "===== YÊU CẦU/GỢI Ý DO NGƯỜI DÙNG VIẾT — NGUỒN SỰ KIỆN ƯU TIÊN CAO =====",
-      userDirective ? ("MỆNH LỆNH:\n" + userDirective) : "",
-      userHint ? ("GỢI Ý:\n" + userHint) : "",
-      "===== HẾT YÊU CẦU NGƯỜI DÙNG =====",
-      "QUY TẮC ĐẶC BIỆT: Phải chuyển ĐẦY ĐỦ mọi chi tiết, hành động, mốc mở đầu, diễn biến và mốc kết thúc mà người dùng đã nêu thành kế hoạch. Không được bỏ sót, rút gọn hoặc thay thế chi tiết quan trọng.",
-      "Không tự thêm tuyến truyện, mục tiêu, nhân vật quan trọng, địa điểm mới hoặc biến cố lớn không có trong yêu cầu người dùng. Nếu cần nối các mốc, chỉ dùng diễn biến cầu nối tối thiểu để giữ liền mạch.",
-      "Nếu yêu cầu có ghi rõ bắt đầu tại A và kết thúc tại B, A và B là hai ANCHOR BẮT BUỘC; kế hoạch phải đi từ A đến B và không mở tuyến khác làm lệch trọng tâm.",
-      "Nếu yêu cầu người dùng xung đột với bối cảnh cũ, ưu tiên yêu cầu người dùng mới nhất và đánh dấu phần xung đột trong kế hoạch thay vì tự sửa yêu cầu."
-    ].filter(Boolean).join("\n") : "",
-    "Lập kế hoạch theo NGÂN SÁCH SỰ KIỆN — không vượt quá 3 sự kiện chính:",
-    "1. Mục tiêu chương", "2. Xung đột chính",
-    "3. DANH SÁCH 1-3 SỰ KIỆN CHÍNH (mỗi sự kiện ghi: mục đích + diễn biến + hậu quả)",
-    "4. Nhân vật xuất hiện: BẮT BUỘC có nhân vật chính; TỐI ĐA 4 NHÂN VẬT CÓ TÊN RIÊNG xuất hiện trực tiếp trong cả chương; ưu tiên nhân vật đã có.",
-    "5. Địa điểm",
-    "6. SCENE BEATS (tối đa 5 beat) — chỉ triển khai 1-3 sự kiện trên, KHÔNG tự sinh thêm sự kiện lớn",
-    "7. Kết chương — phải khớp mốc kết thúc người dùng yêu cầu nếu có",
-    "8. Nếu có cảnh trưởng thành: mức intensity + structure, nhưng không thay đổi phạm vi sự kiện người dùng đã chỉ định",
-    "",
-    "QUY TẮC CỨNG: Không thêm sự kiện lớn thứ 4. Không tạo nhân vật quan trọng mới nếu không có lý do cốt truyện rõ ràng. Nếu có thể dùng nhân vật hiện có thì phải dùng nhân vật hiện có.",
-    hasUserBrief ? "ƯU TIÊN ĐỘ TRUNG THÀNH VỚI BRIEF: Không 'sáng tạo thêm cho hay'. Nhiệm vụ là chuyển brief thành kế hoạch có thể viết được, không phải mở rộng phạm vi truyện." : "",
-    "KHÔNG viết văn xuôi. Chỉ bullet points."
-  ].filter(Boolean).join("\n");
+  const prompt = buildChapterPlanPrompt({ chapterNumber, context, recent, directive: state.directive, hint: state.nextChapterHint,
+    mainCharName: state.mainCharProfile && state.mainCharProfile.name, storyControl: storyControlPromptClient() });
   try{ const { text } = await callAI(prompt, {maxTokens:1400, temperature:0.45}); return text; }catch(err){ return ""; }
 }
 
@@ -5877,6 +6062,7 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
   const limits=chapterWordLimits();
   const minWords=limits.target, maxWords=limits.hardMax;
   const maxAttempts = state.autoContinueMax || 4;
+  const endingAnchor = extractEndingAnchor(state.nextChapterHint || state.directive);
   let attempts = 0, insertUsed = 0;
   const stopReasons = [];   // V12.23: lý do từng lượt thất bại / lý do dừng, báo ra status + chẩn đoán chương
   const failAttempt = (why) => { stopReasons.push("#" + attempts + ": " + why); console.warn("[Auto-continue] #" + attempts + " " + why); };
@@ -5887,7 +6073,12 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
     if(wc >= maxWords){ endNote = "đã chạm giới hạn tối đa " + maxWords + " từ"; break; }
     // V12.22: có brief -> mục tiêu 95% target; không brief -> 100% target.
     const goalWords = hasUserBrief ? Math.round(minWords*0.95) : minWords;
-    if(wc >= goalWords){ endNote = ""; break; }
+    const anchorReached = endingAnchor ? endingAnchorReached(chapterObj.text, endingAnchor) : true;
+    if(wc >= goalWords && anchorReached){ endNote = ""; break; }
+    // Có Ending Anchor nhưng chưa tới mốc kết: tiếp tục dù đã đủ số từ.
+    if(wc >= goalWords && endingAnchor && !anchorReached && wc < maxWords){
+      console.log("[Auto-continue] Đủ từ nhưng chưa tới Ending Anchor — tiếp tục tới điểm kết.");
+    }
     // V12.23: số lượt viết thêm = ĐÚNG số Auto-continue đã đặt; số lần chèn diễn biến tự động (không giới hạn riêng).
     if(attempts >= maxAttempts){ endNote = "đã dùng hết " + maxAttempts + "/" + maxAttempts + " lượt Auto-continue"; break; }
     // Có brief + model đã kết (không bị cắt) mà còn ngắn -> CHÈN thêm diễn biến trước đoạn kết (giữ Ending Anchor).
@@ -5924,6 +6115,7 @@ async function autoContinueUntilDone(chapterObj, chapterNumber, initialModel, in
       "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Giọng tự nhiên.",
       "",
       "Bạn đang VIẾT TIẾP chương " + chapterNumber + " (KHÔNG mở chương mới, KHÔNG tóm tắt).",
+      endingGateInstruction(endingAnchor),
       ((wc < minWords * 0.85)
         ? ("Chương mới được " + wc + "/" + minWords + " từ, CÒN THIẾU NHIỀU. Hãy viết tiếp diễn biến mới hợp lý, liền mạch (thêm cảnh, hội thoại, nội tâm, hành động, hệ quả) để tiến tới khoảng " + minWords + " từ; KHÔNG kết chương sớm. GIỚI HẠN CỨNG " + maxWords + " từ.")
         : ("Chỉ viết tiếp khi đoạn hiện tại thực sự bị cắt giữa chừng. Không kéo dài để đạt chỉ tiêu từ nếu brief/ngữ cảnh đã hoàn tất. GIỚI HẠN CỨNG " + maxWords + " từ. Hiện " + wc + " từ.")),
@@ -6647,25 +6839,9 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
       if(t.length <= maxChars) return t;
       return t.slice(0, Math.floor(maxChars*0.3)) + "\n\n[...]\n\n" + t.slice(-Math.floor(maxChars*0.6));
     }
-    /* Chỉ: summary ch.trước + đoạn cuối ch.gần (không full 2–3 chương) */
-    let recentFullText = "";
-    if(priorChapters.length){
-      const last = priorChapters[priorChapters.length - 1];
-      const lastNum = priorChapters.length;
-      recentFullText = "--- Chương " + lastNum + " (đoạn gần, đã rút) ---\n" + clipChapterText(last.text, 3500);
-      if(priorChapters.length >= 2){
-        const prev = priorChapters[priorChapters.length - 2];
-        recentFullText = "--- Ch" + (lastNum-1) + " " + (prev.title||"") + " ---\n"
-          + (prev.summary || clipChapterText(prev.text, 800))
-          + "\n\n" + recentFullText;
-      }
-    }
-    let olderSummaries = "";
-    if(priorChapters.length > 2){
-      const older = priorChapters.slice(0, -2);
-      const start = Math.max(0, older.length - 8);
-      olderSummaries = older.slice(start).map((c,i)=> "Ch" + (start + i + 1) + ": " + (c.summary || "(chưa tóm tắt)").slice(0, (older.length-start-i)<=3 ? 900 : 350)).join("\n");
-    }
+    /* Chỉ: summary ch.trước + đoạn cuối ch.gần (không full 2–3 chương) — dùng chung với viết nền (shared/core.js) */
+    const _rb = buildRecentBlocks(priorChapters);
+    let recentFullText = _rb.recentFullText, olderSummaries = _rb.olderSummaries;
 
     let plan = "";
     if(!isRegen) plan = await buildChapterPlan(context, recentFullText, chapterNumber);
@@ -6695,91 +6871,12 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
       }
     }
 
-    const regenInstructions = {
-      full: "Viết lại toàn bộ chương với văn phong tự nhiên, không lặp ý cũ.",
-      continuity: "Chỉ sửa lỗi continuity, giữ nguyên cốt truyện và giọng văn.",
-      depth: "Giữ sự kiện, đào sâu nội tâm và phản ứng cơ thể.",
-      describe: "Giữ sự kiện, TĂNG CƯỜNG miêu tả: ngoại hình nhân vật, không khí, giác quan, chi tiết nhỏ. Không lặp lại.",
-      world: "Giữ cốt truyện, bổ sung world-building qua giác quan.",
-      pacing: "Giữ sự kiện, cải thiện nhịp.",
-      nsfw_rewrite: "Viết lại với chi tiết 18+ táo bạo, giác quan, nội tâm."
-    };
-
     const descPrompt = DESCRIPTION_PROMPTS[state.descriptionLevel] || DESCRIPTION_PROMPTS.balanced;
     const explicitPrompt = EXPLICIT_PROMPTS[state.explicitLevel] || EXPLICIT_PROMPTS.sensual;
     const vocabBlock = buildVocabularyBlock();
 
-    const prompt = [
-      "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Không tiếng Anh/Trung/Nhật/Hàn.",
-      "GIỌNG VĂN: Tự nhiên như người viết thật. Câu có nhịp, có chỗ ngắn chỗ dài, có khoảng lặng.",
-      "",
-      "Bạn là tiểu thuyết gia chuyên viết truyện dài kỳ tiếng Việt.",
-      "BẮT BUỘC: Bạn đang viết CHƯƠNG THỨ " + chapterNumber + ".",
-      "Truyện hiện có " + (isRegen ? regenIndex : state.chapters.length) + " chương trước đó.",
-      "",
-      "🎨 " + descPrompt,
-      "",
-      "Bối cảnh:", context || "(chưa có — tự sáng tạo hợp lý)", "",
-      storyControlPromptClient(), "",
-      lastChapterEnding ? ("===== ĐOẠN KẾT CHƯƠNG TRƯỚC (PHẢI TIẾP NỐI) =====\n" + lastChapterEnding + "\n===== HẾT =====\n\nChương mới PHẢI bắt đầu từ việc tiếp nối trực tiếp đoạn kết trên.\nĐỊA ĐIỂM MỞ CHƯƠNG — KHÓA CỨNG: đoạn mở đầu PHẢI diễn ra ĐÚNG địa điểm, thời điểm và với đúng những người đang có mặt như trong đoạn kết chương trước (ví dụ chương trước kết ở biệt thự của A thì chương này vẫn bắt đầu ở biệt thự của A). Chỉ được chuyển địa điểm khi đoạn kết đã nói rõ nhân vật sắp rời đi/đến nơi khác, hoặc sau một câu chuyển cảnh rõ ràng (di chuyển + mốc thời gian). Tuyệt đối không nhảy sang nhà/phòng trọ/nơi ở của nhân vật khác ngay từ câu đầu.") : "",
-      recentFullText ? ("\nChương gần (tránh lặp sự kiện / cấu trúc):\n" + recentFullText) : "",
-      olderSummaries ? ("\nTÓM TẮT CHƯƠNG XA:\n" + olderSummaries) : "",
-      plan ? ("\nKẾ HOẠCH CHƯƠNG " + chapterNumber + ":\n" + plan) : "",
-      "\nNGÂN SÁCH SỰ KIỆN — BẮT BUỘC:",
-      "- Toàn chương chỉ có 1–3 SỰ KIỆN CHÍNH. Không thêm sự kiện lớn thứ 4 dù còn dung lượng từ.",
-      "- Các cảnh/beat nhỏ chỉ là bước triển khai, phản ứng hoặc hậu quả của 1–3 sự kiện chính; không được biến thành tuyến sự kiện mới.",
-      "- Nếu chương cần dài hơn, hãy đào sâu diễn biến, đối thoại, nội tâm, nguyên nhân–hậu quả và chi tiết cảnh thay vì nhồi thêm biến cố.",
-      "\nNHÂN VẬT PHỤ — BẮT BUỘC:",
-      "- GIỚI HẠN CỨNG: TỐI ĐA 4 NHÂN VẬT CÓ TÊN RIÊNG xuất hiện TRỰC TIẾP (có lời thoại hoặc hành động cụ thể) trong toàn chương, tính cả nhân vật chính. Đám đông/người qua đường không tên không tính vào số này.",
-      "- Nếu chương 1 hoặc mở đầu một arc mới cần giới thiệu bối cảnh, KHÔNG dồn hết dàn nhân vật vào 1 chương — chỉ giới thiệu những ai TRỰC TIẾP tham gia 1-3 sự kiện chính của CHƯƠNG NÀY; người còn lại để dành cho chương sau.",
-      "- Ưu tiên sử dụng nhân vật đã tồn tại trong hồ sơ truyện (xem mục NHÂN VẬT ĐÃ CÓ TRONG TRUYỆN ở Bối cảnh phía trên); không tùy tiện tạo nhân vật quan trọng mới.",
-      "- Mỗi nhân vật xuất hiện phải có LÝ DO rõ ràng và VAI TRÒ cụ thể đối với một trong 1–3 sự kiện chính.",
-      "- Nếu một nhân vật mới không thực sự cần cho cốt truyện, KHÔNG được tạo chỉ để lấp cảnh, đối thoại hoặc làm nền.",
-      "- Nhân vật mới có vai trò quan trọng chỉ được xuất hiện khi kế hoạch đã chứng minh nhu cầu cốt truyện; nếu không có trong kế hoạch, không tự ý nâng một nhân vật mới thành nhân vật quan trọng.",
-      "- TRƯỚC KHI VIẾT: tự đếm lại số nhân vật có tên riêng dự kiến xuất hiện; nếu quá 4, cắt bớt hoặc chuyển bớt sang không tên.",
-      (relevantCharacters(1).length === 0) ? "- CHƯA CÓ NHÂN VẬT PHỤ NÀO ĐƯỢC KHAI BÁO TRƯỚC. Nếu cảnh cần người ngoài NVC, ưu tiên nhân vật KHÔNG TÊN RIÊNG (chức danh chung: 'người gác cổng', 'cô gái lạ mặt', 'một thương nhân'...). CHỈ đặt tên riêng cho một nhân vật mới khi họ thực sự sẽ quay lại các chương sau; nếu đặt tên, phải cho họ vai trò/lý do rõ ràng." : "",
-      isRegen ? ("\nVIẾT LẠI chương " + chapterNumber + ". Chế độ: " + (regenInstructions[regenMode]||regenInstructions.full)) : "",
-      vocabBlock ? ("\n" + vocabBlock) : "",
-      "",
-      "ĐỘ DÀI & TỰ DO SÁNG TÁC: mục tiêu " + (state.minChapterWords || 5000) + " từ, tối thiểu " + Math.round((state.minChapterWords || 5000) * 0.95) + " từ. GỢI Ý/BRIEF LÀ XƯƠNG SỐNG, không phải kịch bản từng câu: bạn được TỰ DO sáng tác phần thân chương — thêm cảnh phụ, chuyển cảnh, hội thoại, nội tâm, cảm xúc, phản ứng, giác quan, hành động nhỏ, nguyên nhân–hậu quả, các nhịp nhỏ bên trong sự kiện — để chương tự nhiên và dài. Mỗi ý/nhịp trong brief phải thành MỘT CẢNH ĐẦY ĐỦ (bối cảnh, hành động, thoại, phản ứng, hệ quả), không tóm tắt, không nhảy cóc thời gian. Mọi cảnh phụ phải mang thông tin/cảm xúc/quyết định/thế chủ động MỚI; không lặp ý, không độn chữ. GIỚI HẠN: chỉ các sự kiện chính có trong brief, không thêm biến cố lớn ngoài brief; không phá canon; không mở arc lớn, không thêm nhân vật quan trọng mới, không tiết lộ thông tin để dành chương sau, không đổi hướng truyện. ENDING ANCHOR (điểm kết của brief) là điểm đích DUY NHẤT bắt buộc: chỉ chạm tới ở ĐOẠN CUỐI sau khi đã đủ độ dài; viết xong thì DỪNG HẲN.",
-      "CHỐNG LẶP: Không lặp sự kiện, cách giải quyết, cấu trúc, cụm từ, hình ảnh đã dùng.",
-      state.pronounRules ? ("\nQUY TẮC XƯNG HÔ:\n" + state.pronounRules) : "",
-      usingNsfw ? ("\n" + EROTIC_STYLE_PROMPT) : "",
-      usingNsfw ? ("\nMỨC 18+ BẮT BUỘC: " + explicitPrompt) : "",
-      state.mature && !usingNsfw ? "Văn phong trưởng thành được phép." : "",
-      "",
-      "QUY TẮC TIÊU ĐỀ: Chỉ TÊN CHƯƠNG tiếng Việt, KHÔNG chữ 'Chương', KHÔNG số.",
-      "",
-      "===== NHẮC LẠI =====",
-      "1. 100% TIẾNG VIỆT CÓ DẤU.",
-      "2. Tiêu đề tiếng Việt, không chữ 'Chương', không số.",
-      "3. Tiếp nối liền mạch từ đoạn kết chương trước.",
-      "4. Xưng hô nhất quán.",
-      "5. Không lặp ý, không lặp câu.",
-      ((state.directive || state.nextChapterHint) ? "6. SỰ KIỆN: đúng các nhịp trong brief, mỗi nhịp phải viết đủ dài; không thêm biến cố lớn ngoài brief." : "6. MỖI CHƯƠNG CHỈ 1–3 SỰ KIỆN CHÍNH; không nhồi biến cố mới ngoài ngân sách."),
-      "7. MỖI NHÂN VẬT XUẤT HIỆN PHẢI CÓ LÝ DO + VAI TRÒ; ưu tiên nhân vật đã có ở danh sách NHÂN VẬT ĐÃ CÓ TRONG TRUYỆN phía trên, không tùy tiện tạo nhân vật quan trọng mới.",
-      "8. MIÊU TẢ: khi nhân vật mới xuất hiện hoặc cảnh mới mở, TẢ ngoại hình + không khí qua chi tiết cụ thể.",
-      "9. BỐ CỤC: chia thành nhiều đoạn ngắn 2–4 câu (tối đa ~90 từ/đoạn), các đoạn cách nhau MỘT DÒNG TRỐNG. Mỗi lượt thoại nằm trên MỘT ĐOẠN RIÊNG (mở bằng dấu “ hoặc —). Đổi cảnh/đổi người nói/đổi nhịp thì xuống đoạn mới. TUYỆT ĐỐI không viết một khối văn liền dài.",
-      state.directive ? ("===== BRIEF NGƯỜI DÙNG — ƯU TIÊN CAO NHẤT =====\nMỆNH LỆNH TOÀN VẸN (KHÔNG ĐƯỢC CẮT):\n" + String(state.directive) + "\n===== HẾT MỆNH LỆNH =====") : "",
-      state.nextChapterHint ? ("===== GỢI Ý NGƯỜI DÙNG — PHẢI BÁM ĐẦY ĐỦ =====\n" + String(state.nextChapterHint) + "\n===== HẾT GỢI Ý =====") : "",
-      state.autoNextChapterHint ? ("GỢI Ý TỰ ĐỘNG CHỈ ĐỂ THAM KHẢO — KHÔNG ĐƯỢC GHI ĐÈ/ƯU TIÊN HƠN BRIEF NGƯỜI DÙNG:\n" + String(state.autoNextChapterHint)) : "",
-      (state.directive || state.nextChapterHint) ? [
-        "QUY TẮC BÁM BRIEF NGƯỜI DÙNG:",
-        "- Phải thực hiện ĐẦY ĐỦ từng yêu cầu, chi tiết, hành động và mốc mà người dùng đã ghi; không được bỏ qua chỉ vì kế hoạch tự tạo khác.",
-        "- Nếu người dùng nêu KHÚC ĐẦU và KHÚC KẾT của cùng một cảnh, hai điểm đó là ANCHOR BẮT BUỘC. Viết cầu nối giữa chúng nhưng không được đổi điểm bắt đầu hoặc điểm kết thúc.",
-        "- Được thêm cảnh phụ, thoại, nội tâm, chi tiết đời thường bên trong các sự kiện của brief. Không tự mở tuyến truyện mới, không thêm mục tiêu phụ lớn, không thêm biến cố lớn, không đưa nhân vật mới quan trọng vào nếu brief không yêu cầu.",
-        "- Không dùng phần bối cảnh/threads/foreshadowing để lấn át brief. Những thứ đó chỉ dùng để giữ continuity khi không mâu thuẫn.",
-        "- Đạt độ dài bằng cách đào sâu diễn biến bên trong brief (không bơm tuyến khác, không kéo dài hậu cảnh sau điểm kết). Chỉ kết khi đã đủ độ dài VÀ đã tới Ending Anchor; viết xong anchor thì dừng.",
-        "- Trước khi kết thúc, tự kiểm tra: (1) đã triển khai đủ các điểm người dùng yêu cầu chưa; (2) đã đi tới mốc kết thúc chưa; (3) có tự thêm tuyến/nhân vật/biến cố ngoài brief không."
-      ].join("\n") : "",
-      buildLengthPlan(state.nextChapterHint || state.directive, (state.minChapterWords || 5000)),
-      (state.mainCharProfile && state.mainCharProfile.name) ? ("10. NHÂN VẬT CHÍNH BẮT BUỘC LÀ TRUNG TÂM CHƯƠNG NÀY: " + state.mainCharProfile.name + (state.mainCharProfile.appearance ? (" — " + String(state.mainCharProfile.appearance).slice(0,150)) : "") + ". TUYỆT ĐỐI không viết chương mà thiếu hẳn nhân vật này, và không đổi tên/nhầm sang nhân vật khác.") : "",
-      usingNsfw ? "7. CẢNH 18+ ƯU TIÊN CAO NHẤT — đủ 4 lớp: cơ thể (số đo hồ sơ) + cảm giác thể xác + nội tâm đa lớp + âm thanh/nhịp. Cấm chỉ kể hành động bên ngoài. Cấm bỏ cảm giác và nội tâm." : "7. (không có yêu cầu 18+ đặc biệt)",
-      "8. Định dạng:",
-      "TIÊU ĐỀ: <tên chương>",
-      "NỘI DUNG:",
-      "<toàn bộ chương>"
-    ].filter(Boolean).join("\n");
+    const prompt = buildMainWritePrompt({ chapterNumber, isRegen, regenIndex, regenMode, descPrompt, explicitPrompt, vocabBlock, usingNsfw,
+      context, lastChapterEnding, recentFullText, olderSummaries, plan, priorCount: (isRegen ? regenIndex : state.chapters.length) });
 
     const promptTokens = estimateTokens(prompt);
     if(promptTokens > 90000) setStatus("⚠ Prompt ~" + promptTokens + " token — có thể vượt context.", true);
@@ -6967,9 +7064,10 @@ $ID("continueChapterBtn").addEventListener("click", async ()=>{
       "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU. Giọng tự nhiên.",
       "",
       "Bạn đang VIẾT TIẾP chương " + (idx + 1) + " (không mở chương mới).",
+      endingGateInstruction(extractEndingAnchor(state.nextChapterHint || state.directive)),
       "===== ĐOẠN CUỐI (PHẢI TIẾP NỐI) =====", tail, "===== HẾT =====",
       "",
-      "Viết TIẾP liền mạch 1500-2500 từ. Bắt đầu ngay từ câu tiếp theo. Không tóm tắt, không nhảy cảnh, không lặp ý/cụm từ.",
+      "Viết TIẾP liền mạch, không bị giới hạn bởi 1500-2500 từ nếu Ending Anchor chưa được thực hiện. Bắt đầu ngay từ câu tiếp theo. Không tóm tắt, không nhảy cảnh, không lặp ý/cụm từ. Nếu đã thực hiện xong Ending Anchor thì DỪNG ngay.",
       "🎨 " + (DESCRIPTION_PROMPTS[state.descriptionLevel] || ""),
       chapter.plan ? ("Kế hoạch:\n" + chapter.plan) : "",
       vocabBlock,
@@ -7011,6 +7109,40 @@ $ID("continueChapterBtn").addEventListener("click", async ()=>{
     chapter.text = chapter.text.replace(/\s+$/,"") + "\n\n" + contText.trim();
     chapter.wordCount = countWords(chapter.text);
     chapter.truncated = contFinish === "length";
+
+    // V12.24: nếu nút Viết Tiếp vừa nối xong nhưng Ending Anchor vẫn chưa tới,
+    // tự nối thêm tối đa 1 lượt nữa trong cùng thao tác (không bắt người dùng bấm lại).
+    const manualAnchor = extractEndingAnchor(state.nextChapterHint || state.directive);
+    if(manualAnchor && !endingAnchorReached(chapter.text, manualAnchor) && chapter.wordCount < chapterWordLimits().hardMax){
+      try{
+        const rem = chapterWordLimits().hardMax - chapter.wordCount;
+        const followPrompt = [
+          "BẮT BUỘC NGÔN NGỮ: 100% TIẾNG VIỆT CÓ DẤU.",
+          "Đây là LƯỢT NỐI TIẾP BỔ SUNG của chính chương hiện tại. Chương CHƯA tới Ending Anchor.",
+          endingGateInstruction(manualAnchor),
+          "Hiện chương có " + chapter.wordCount + " từ; phần còn lại tối đa " + rem + " từ.",
+          "Bắt đầu ngay sau câu cuối hiện tại. Chỉ viết phần còn thiếu để đi tới Ending Anchor; không mở arc mới, không thêm biến cố lớn, không viết hậu cảnh sau điểm kết.",
+          "===== ĐOẠN CUỐI HIỆN TẠI =====",
+          chapter.text.slice(-3500),
+          "===== HẾT =====",
+          "CHỈ TRẢ VỀ phần văn xuôi tiếp theo."
+        ].join("\n\n");
+        const rr = await callAI(followPrompt, {
+          maxTokens: Math.min(12000, Math.max(1200, rem * 2)),
+          temperature: 0.82, modelOverride: targetModel,
+          frequency_penalty: 0.15, presence_penalty: 0.1
+        });
+        let extra = dropRestartedContinuation(chapter.text, rr.text || "");
+        extra = formatParagraphs(stripForeign(stripThinkingOutput(extra)));
+        if(extra.trim() && countWords(extra) >= 40){
+          extra = trimToWordLimit(extra, rem).text;
+          chapter.text = chapter.text.replace(/\s+$/,"") + "\n\n" + extra.trim();
+          chapter.wordCount = countWords(chapter.text);
+          chapter.truncated = rr.finishReason === "length";
+        }
+      }catch(e){ console.warn("[Viết tiếp/Ending Anchor]", e); }
+    }
+
     if(usingNsfw){ chapter.modelUsed = targetModel; chapter.isNsfw = true; }
     clearDraftProgress();
     persist(); renderChapterNav(); renderCurrentChapter();

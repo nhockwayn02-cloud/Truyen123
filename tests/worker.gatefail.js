@@ -10,12 +10,13 @@ const LONG = ("Gió thổi qua con phố vắng, cô bước đi giữa đêm m�
 global.fetch = async (url, init) => {
   const prompt = JSON.stringify(JSON.parse(init.body).messages);
   let content;
-  if (/VIẾT CHƯƠNG|Viết TIẾP chương/.test(prompt)) content = LONG;
+  if (/VIẾT CHƯƠNG|Viết TIẾP chương|Bạn đang viết CHƯƠNG THỨ/.test(prompt)) content = LONG;
   else if (prompt.includes("QUALITY AUDITOR")) { c.review++; content = JSON.stringify({ score: 50, verdict: "HARD_FAIL", mainEventCount: 6, namedCharacterCount: 2, hardFailures: ["Sai outline"], rewriteInstructions: ["Bỏ bớt sự kiện"] }); }
   else if (prompt.includes("SỬA LẠI BẢN THẢO")) { c.rewrite++; content = LONG; }
   else if (prompt.includes("CẬP NHẬT NHÂN VẬT")) { c.nv++; content = "[]"; }
   else if (prompt.includes("CẬP NHẬT THẾ GIỚI")) { c.world++; content = "{}"; }
   else if (prompt.includes("bộ máy tóm tắt")) { c.summary++; content = "**Tóm tắt chương:** x"; }
+  else if (/Lập KẾ HOẠCH cho CHƯƠNG/.test(prompt)) { content = "Kế hoạch ngắn."; }
   else { c.other++; content = "{}"; }
   return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ choices: [{ message: { content }, finish_reason: "stop" }] }), text: async () => content };
 };

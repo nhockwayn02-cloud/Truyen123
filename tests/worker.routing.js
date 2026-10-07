@@ -10,7 +10,7 @@ let calls = [];
 const PROSE = ("Gió thổi qua con phố vắng, cô bước đi giữa đêm mưa lạnh. ").repeat(60).trim();
 global.fetch = async (url, init) => {
   const body = JSON.parse(init.body); const prompt = JSON.stringify(body.messages);
-  const isChapter = /VIẾT CHƯƠNG|Viết TIẾP chương/.test(prompt);
+  const isChapter = /VIẾT CHƯƠNG|Viết TIẾP chương|Bạn đang viết CHƯƠNG THỨ/.test(prompt);
   calls.push({ model: body.model, isChapter, prompt });
   let content = PROSE;
   if (!isChapter) {
@@ -48,7 +48,7 @@ T("PRIMARY + brief 18+ -> dùng model NSFW, có rào chắn tuổi + Story Contr
 T("NONE + brief 18+ -> vẫn dùng model thường, không chèn văn phong erotic", async () => {
   const r = await run("b", { state: { chapterMatureFocus: "none", nextChapterHint: "Cảnh nóng, ân ái." } });
   assert.strictEqual(r.main.model, "normal-model");
-  assert(!r.main.prompt.includes("RÀO CHẮN TUỔI"), "không được có prompt 18+ khi NONE");
+  assert(!r.main.prompt.includes("PHONG CÁCH REDQUILL"), "không được chèn văn phong erotic khi NONE");
   assert.strictEqual(r.chapter.isNsfw, false);
 });
 T("Câu thường ngày (cà phê, phản kháng) không bị route sang NSFW", async () => {

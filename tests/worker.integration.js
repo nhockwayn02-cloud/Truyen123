@@ -13,7 +13,7 @@ const LONG = ("Gió thổi qua con phố vắng, cô bước đi giữa đêm m�
 global.fetch = async (url, init) => {
   const body = JSON.parse(init.body); const prompt = JSON.stringify(body.messages);
   const isNV = prompt.includes("CẬP NHẬT NHÂN VẬT"), isW = prompt.includes("CẬP NHẬT THẾ GIỚI");
-  const isChapter = /VIẾT CHƯƠNG|Viết TIẾP chương/.test(prompt);
+  const isChapter = /VIẾT CHƯƠNG|Viết TIẾP chương|Bạn đang viết CHƯƠNG THỨ/.test(prompt);
   const isSummary = prompt.includes("bộ máy tóm tắt");
   const isReview = prompt.includes("QUALITY AUDITOR");
   if (isNV) { counts.nv++; inflightNV++; maxInflightNV = Math.max(maxInflightNV, inflightNV); } else if (isW) counts.world++; else if (isChapter) counts.chapter++; else if (isReview) counts.other++; else counts.other++;

@@ -50,8 +50,8 @@ function job(extra) { return { apiEndpoint: "x", apiKey: "k", model: "m", storyS
   const c1 = await T.generateOneChapter(job({ nextChapterHint: "Cô vào phòng, mở tủ.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
   t("Có gợi ý + model tự dừng → KHÔNG tự viết tiếp để đủ số từ", () => {
     assert(!calls.some(p => /Viết TIẾP chương/.test(p)), "không được có lượt viết tiếp");
-    assert(calls.filter(p => !/CHÈN THÊM DIỄN BIẾN/.test(p)).length === 1, "chỉ 1 lượt viết chính");
-    assert(/CÚ CHỐT BẮT BUỘC/.test(calls[0]) && /tắt đèn/.test(calls[0]), "prompt phải khóa cú chốt ở cuối");
+    assert(calls.filter(p => !/CHÈN THÊM DIỄN BIẾN/.test(p) && !/Lập KẾ HOẠCH cho CHƯƠNG/.test(p)).length === 1, "chỉ 1 lượt viết chính (không tính bước lập kế hoạch)");
+    const _main = calls.find(p => /Bạn đang viết CHƯƠNG THỨ/.test(p)) || ""; assert(/CÚ CHỐT BẮT BUỘC/.test(_main) && /tắt đèn/.test(_main), "prompt phải khóa cú chốt ở cuối");
   });
   // V12.22: ĐÃ BỎ "chia đoạn làm dày". Có gợi ý + chương ngắn -> CHÈN diễn biến vào TRƯỚC đoạn kết, Ending Anchor giữ nguyên ở cuối.
   let _u = 0; const pw = (n) => { let x = ""; n = n + 1000; while (n > 0) { x += "bcdglmnpqrstvx"[n % 14] + "ảẹồưếịơ"[Math.floor(n / 14) % 7]; n = Math.floor(n / 70); } return x; };
@@ -108,7 +108,7 @@ function job(extra) { return { apiEndpoint: "x", apiKey: "k", model: "m", storyS
   t("Không gợi ý → vẫn viết tiếp đến đủ số từ như cũ", () => assert(calls.some(p => /Viết TIẾP chương/.test(p))));
   // Có gợi ý + bị cắt (length): được viết tiếp, và lệnh viết tiếp mang theo gợi ý + cú chốt
   calls = []; let n = 0;
-  sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content; calls.push(p); n++; return n === 1 ? { text: para(150), finishReason: "length" } : { text: para(400) + " Cô viết dòng chữ rồi tắt đèn.", finishReason: "stop" }; };
+  sandbox.callWithRetry = async (a) => { const p = a.messages[a.messages.length - 1].content; calls.push(p); if (/Lập KẾ HOẠCH cho CHƯƠNG/.test(p)) return { text: "Kế hoạch ngắn.", finishReason: "stop" }; n++; return n === 1 ? { text: para(150), finishReason: "length" } : { text: para(400) + " Cô viết dòng chữ rồi tắt đèn.", finishReason: "stop" }; };
   await T.generateOneChapter(job({ nextChapterHint: "Cô vào phòng.\nCú chốt cuối chương: cô viết dòng chữ rồi tắt đèn." }));
   t("Có gợi ý + bị cắt giữa chừng → viết tiếp kèm gợi ý và cú chốt", () => {
     const cont = calls.find(p => /Viết TIẾP chương/.test(p)); assert(cont, "phải có lượt viết tiếp");

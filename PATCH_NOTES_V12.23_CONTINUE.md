@@ -41,3 +41,17 @@
 - Client không gửi stateSnapshots/stateSnapshot/versions của chương cũ lên server (worker không dùng). Khi hợp nhất kết quả job, client khôi phục các trường này từ bản local (khớp theo vị trí + tiêu đề) nên không mất lịch sử snapshot/phiên bản.
 - Nếu payload vẫn > 5 MB: báo lỗi rõ ngay tại client (kèm 3 khóa nặng nhất) thay vì gửi rồi nhận HTTP 400.
 - Test mới: tests/e2e_bg_slim.py (7 ca).
+
+# V12.23 – Từ báo cáo job: tiếng Anh lẫn vào truyện + mở rộng cuối bị bỏ
+- Xóa câu/đoạn tiếng Anh do model "nghĩ to" lẫn giữa truyện (removeEnglishLeaks trong shared/core.js, gắn vào stripForeign nên client + worker đều dùng). Chỉ xóa khi đoạn/câu gần như không có dấu tiếng Việt và chứa ≥ 3 từ khóa tiếng Anh; không đụng lời thoại ngắn hay từ mượn. Worker ghi "Đã xóa N câu/đoạn tiếng Anh…" vào cảnh báo.
+- Worker: vòng viết tiếp dừng sớm (khi chương ≥ 60% mục tiêu) nếu thời gian còn dưới 270s để chừa chỗ cho bước mở rộng cuối; bước mở rộng cuối cần ≥ 150s còn lại (trước đây ngưỡng 90s quá thấp so với thời gian thực của 1 lần viết lại cả chương nên luôn bị bỏ qua). Thông báo bỏ qua nay ghi rõ số giây còn lại.
+
+# V12.23 – Viết nền GIỐNG viết thường
+- Prompt viết chương chính được tách thành hàm buildMainWritePrompt (index.html) — viết thường gọi hàm này; viết nền cũng gọi đúng hàm đó (proseOnly: không đòi TIÊU ĐỀ/NỘI DUNG vì tên chương do hệ thống tạo).
+- Cơ chế mới: scripts/sync-shared.js sao NGUYÊN VĂN 23 hàm dựng ngữ cảnh/prompt từ index.html vào worker (khối CLIENT-MIRROR, nguồn sự thật = index.html). Sửa các hàm đó ở index.html rồi chạy `node scripts/sync-shared.js` (test sync-check sẽ báo lệch nếu quên).
+- Worker nay dùng: buildContextBlock (story bible, style, arc, outline, thẻ nhân vật, địa điểm, vật phẩm, threads, foreshadowing, timeline, kiến thức nhân vật, lịch sử cảnh...), buildRecentBlocks, bước lập KẾ HOẠCH CHƯƠNG bằng AI (buildChapterPlanPrompt; cần còn ≥150s), và các quy tắc của viết thường (ngân sách sự kiện, nhân vật phụ, chống lặp, bố cục đoạn ngắn, miêu tả...).
+- Tham số lấy mẫu lượt viết chính = viết thường: temperature 0.85, frequency_penalty 0.25/0.45, presence_penalty 0.25/0.35 (18+/thường).
+- Giữ lại 2 điểm chỉ có ở viết nền: "cú chốt" Ending Anchor ở cuối prompt, và rào chắn tuổi khi 18+ mà chưa bật mature.
+- Worker tự bổ sung các danh sách còn thiếu của truyện (arcs, outlinePlans, locations...) trước khi dùng code của viết thường.
+- Test mới: tests/worker.mirror.test.js. Test cũ cập nhật marker nhận diện lượt viết chính ("Bạn đang viết CHƯƠNG THỨ") và bỏ qua lượt lập kế hoạch.
+- CÒN KHÁC: vòng viết tiếp/chèn/mở rộng cuối vẫn là 2 đoạn code riêng (đã chỉnh cùng quy tắc); viết nền có quản lý thời gian 13,5 phút; viết thường có streaming.
