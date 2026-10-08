@@ -6,7 +6,7 @@
 <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
 <meta content="yes" name="apple-mobile-web-app-capable"/>
 <meta content="#0e0f13" name="theme-color"/>
-<title>Xưởng Truyện AI Pro Max v10</title>
+<title>Xưởng Truyện AI Pro Max v12.24</title>
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
 <style>
@@ -310,6 +310,16 @@ input[type=range]{padding:4px 0;background:transparent;border:none;}
 
 .authoring-stack .section-body{max-height:none}
 @supports (-webkit-touch-callout:none){body{-webkit-text-size-adjust:100%}.btn,.icon-btn,input,textarea,select{font-size:16px}.btn-sm{font-size:13px}}
+
+/* v12.25 — iOS dark */
+html{color-scheme:dark}
+:root{--topbar-h:58px}
+.story-tabs{top:var(--topbar-h)}
+.main,.sidebar{contain:layout}
+.editor-text{-webkit-user-select:text;user-select:text}
+@supports (height:100dvh){body{min-height:100dvh}.layout{height:calc(100dvh - 130px)}.main{max-height:calc(100dvh - 130px)}.sidebar{max-height:calc(100dvh - 130px)}}
+@media (pointer:coarse){.btn{min-height:44px}.btn-sm{min-height:40px}.icon-btn{width:44px;height:44px}.story-tab{min-height:40px}.story-tab-add{width:40px;height:40px}.chapter-chip{min-height:56px}}
+@media (max-width:900px){.layout{height:auto!important}.main{max-height:none!important;contain:none;padding-bottom:calc(70px + env(safe-area-inset-bottom))}.sidebar{max-height:none!important;contain:none}}
 </style>
 </head>
 <body>
@@ -2966,26 +2976,14 @@ function refreshBackupBanner(){
 }
 
 function updateStorageBar(){
-  try{
-    let total = 0;
-    for(let i=0;i<localStorage.length;i++){
-      const k = localStorage.key(i);
-      if(k && k.indexOf("aiStoryWorkshop_") === 0){
-        total += (localStorage.getItem(k) || "").length + k.length;
-      }
-    }
-    const mb = total / (1024*1024);
-    const pct = Math.min(100, (mb / 5) * 100);
-    const fill = $ID("storageFill");
-    const txt = $ID("storageText");
-    if(fill) fill.style.width = pct.toFixed(1) + "%";
-    if(txt){
-      let msg = mb.toFixed(2) + " MB / ~5 MB (" + pct.toFixed(0) + "%)";
-      if(pct > 75) msg += " ⚠ sắp đầy — nên nén chương cũ";
-      txt.textContent = msg;
-      txt.style.color = pct > 80 ? "var(--red)" : (pct > 60 ? "var(--amber)" : "var(--ink-dim)");
-    }
-  }catch(e){}
+  const fill=$ID("storageFill"), txt=$ID("storageText");
+  if(!(navigator.storage && navigator.storage.estimate)) return;
+  navigator.storage.estimate().then(({usage=0,quota=0})=>{
+    if(!quota) return;
+    const pct=Math.min(100,usage/quota*100);
+    if(fill) fill.style.width=Math.max(pct,0.5).toFixed(1)+"%";
+    if(txt){ txt.textContent=(usage/1048576).toFixed(1)+" MB đã dùng / ~"+Math.round(quota/1048576)+" MB cho phép ("+pct.toFixed(1)+"%)"+(pct>75?" ⚠ sắp đầy — nên nén chương cũ":""); txt.style.color=pct>80?"var(--red)":(pct>60?"var(--amber)":"var(--ink-dim)"); }
+  }).catch(()=>{});
 }
 
 /* ========== STORY TABS ========== */
@@ -3010,13 +3008,13 @@ function renderStoryTabs(){
     storyTabList.appendChild(tab);
   });
 }
-function switchStory(storyId){
+async function switchStory(storyId){
   if(storyId === currentStoryId) return;
-  persist();
+  persistNow();
   currentStoryId = storyId;
   localStorage.setItem(LAST_STORY_KEY, storyId);
   openCharDetails.clear();
-  loadCurrentStoryIntoState();
+  await loadCurrentStoryIntoState();
   hydrateFormFromState();
   renderAll();
   renderStoryTabs();
@@ -3025,7 +3023,7 @@ function switchStory(storyId){
 async function renameStory(storyId){
   const meta = storiesIndex.find(x=>x.id===storyId);
   if(!meta) return;
-  const name = prompt("Đổi tên:", meta.name || "");
+  const name = await askText("Đổi tên truyện", meta.name || "");
   if(name == null) return;
   meta.name = name.trim() || meta.name;
   saveStoriesIndex();
@@ -3053,15 +3051,15 @@ async function deleteStory(storyId){
     currentStoryId = storiesIndex[0].id;
     localStorage.setItem(LAST_STORY_KEY, currentStoryId);
     openCharDetails.clear();
-    loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll();
+    await loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll();
   }
   renderStoryTabs();
   setStatus("Đã xoá truyện.", false);
 }
-$ID("storyTabAdd").addEventListener("click", ()=>{
-  const name = prompt("Tên truyện mới:", "Truyện " + (storiesIndex.length + 1));
+$ID("storyTabAdd").addEventListener("click", async ()=>{
+  const name = await askText("Tên truyện mới", "Truyện " + (storiesIndex.length + 1));
   if(name == null) return;
-  persist();
+  persistNow();
   const s = newStoryState((name||"").trim() || ("Truyện " + (storiesIndex.length + 1)));
   saveStoryStateToDisk(s.storyId, s);
   storiesIndex.push({ id: s.storyId, name: s.storyName, updatedAt: Date.now() });
@@ -3069,7 +3067,7 @@ $ID("storyTabAdd").addEventListener("click", ()=>{
   currentStoryId = s.storyId;
   localStorage.setItem(LAST_STORY_KEY, s.storyId);
   openCharDetails.clear();
-  loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll(); renderStoryTabs();
+  await loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll(); renderStoryTabs();
   setStatus("Đã tạo: " + state.storyName, false);
 });
 $ID("newStoryBtn").addEventListener("click", ()=> $ID("storyTabAdd").click());
@@ -3088,7 +3086,7 @@ $ID("duplicateStoryBtn").addEventListener("click", async ()=>{
   currentStoryId = blob.storyId;
   localStorage.setItem(LAST_STORY_KEY, blob.storyId);
   openCharDetails.clear();
-  loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll(); renderStoryTabs();
+  await loadCurrentStoryIntoState(); hydrateFormFromState(); renderAll(); renderStoryTabs();
   setStatus("Đã nhân bản.", false);
 });
 
@@ -3175,6 +3173,7 @@ async function detectHeatLevel(tail, plan){
 
 /* ========== AI CALL ========== */
 const AI_CALL_TIMEOUT_MS = 180000;
+const AI_IDLE_TIMEOUT_MS = 90000;
 const AI_MAX_RETRIES = 3;
 const AI_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
 
@@ -3218,14 +3217,15 @@ async function callAI(prompt, opts){
   const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + key };
   if(isOpenRouter){
     headers["HTTP-Referer"] = location.protocol === "file:" ? "https://localhost" : location.origin;
-    headers["X-Title"] = "Xuong Truyen AI Pro Max v10";
+    headers["X-Title"] = "Xuong Truyen AI Pro Max v12.24";
   }
 
   let lastErr = null;
   for(let attempt = 0; attempt <= AI_MAX_RETRIES; attempt++){
     const controller = new AbortController();
     globalAbort = controller;
-    const timer = setTimeout(()=>controller.abort(), AI_CALL_TIMEOUT_MS);
+    let timer = setTimeout(()=>controller.abort(), AI_CALL_TIMEOUT_MS);
+    const armTimer = ms => { clearTimeout(timer); timer = setTimeout(()=>controller.abort(), ms); };
     let res;
     try{
       res = await fetch(endpoint, { method:"POST", headers, body: JSON.stringify(body), signal: controller.signal });
@@ -3243,7 +3243,7 @@ async function callAI(prompt, opts){
       if(attempt < AI_MAX_RETRIES){ await sleep(800 * Math.pow(2, attempt)); continue; }
       throw lastErr;
     }
-    clearTimeout(timer);
+    if(streaming && res.ok) armTimer(AI_IDLE_TIMEOUT_MS); else clearTimeout(timer);
     if(!res.ok){
       globalAbort = null;
       let detail = "";
@@ -3271,6 +3271,7 @@ async function callAI(prompt, opts){
         while(true){
           const { done, value } = await reader.read();
           if(done) break;
+          armTimer(AI_IDLE_TIMEOUT_MS);
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
@@ -3286,7 +3287,14 @@ async function callAI(prompt, opts){
             }catch(e){}
           }
         }
-      }finally{ try{ reader.releaseLock(); }catch(e){} }
+      }catch(streamErr){
+        if(streamErr && streamErr.name === "AbortError"){
+          globalAbort = null;
+          if(userStopRequested){ const ue = new Error("Đã hủy."); ue.userAbort = true; throw ue; }
+          if(content.length < 800) throw new Error("Hết thời gian chờ: model không gửi thêm dữ liệu.");
+          finishReason = "length"; /* giữ phần đã nhận, vòng viết tiếp sẽ nối */
+        } else throw streamErr;
+      }finally{ clearTimeout(timer); try{ reader.releaseLock(); }catch(e){} }
       globalAbort = null;
       if(!content.trim()) throw new Error("Phản hồi trống (streaming).");
     } else {
@@ -3393,7 +3401,7 @@ function showConfirm(message, opts){
     const btnOk = document.createElement("button");
     btnOk.textContent = opts.okText || "Đồng ý";
     btnOk.style.cssText = "padding:9px 16px;border-radius:8px;border:1px solid " + (opts.danger ? "#e2584d" : "#d9a441") + ";background:" + (opts.danger ? "rgba(226,88,77,.12)" : "rgba(217,164,65,.12)") + ";color:" + (opts.danger ? "#e2584d" : "#d9a441") + ";font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;";
-    btns.appendChild(btnCancel); btns.appendChild(btnOk);
+    if(!opts.hideCancel) btns.appendChild(btnCancel); btns.appendChild(btnOk);
     box.appendChild(msg); box.appendChild(btns);
     overlay.appendChild(box); document.body.appendChild(overlay);
     const onKey = e => { if(e.key==="Escape") cleanup(false); else if(e.key==="Enter") cleanup(true); };
@@ -3403,6 +3411,35 @@ function showConfirm(message, opts){
     overlay.onclick = e => { if(e.target === overlay) cleanup(false); };
     document.addEventListener("keydown", onKey);
     setTimeout(()=>btnOk.focus(), 50);
+  });
+}
+
+function showAlert(m){ return showConfirm(String(m), {okText:"Đóng", hideCancel:true}); }
+function askText(title, def){
+  return new Promise(res=>{
+    const ov=document.createElement("div"); ov.className="modal-overlay";
+    const bx=document.createElement("div"); bx.className="modal-box"; bx.style.maxWidth="440px";
+    bx.innerHTML='<div style="font-size:14px;margin-bottom:10px;"></div><input type="text" style="margin-bottom:14px;"><div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" style="width:auto;">Hủy</button><button class="btn btn-gold" style="width:auto;">OK</button></div>';
+    bx.firstChild.textContent=title; const inp=bx.querySelector("input"); inp.value=def||"";
+    const bs=bx.querySelectorAll("button"); const done=v=>{ov.remove();res(v);};
+    bs[0].onclick=()=>done(null); bs[1].onclick=()=>done(inp.value);
+    inp.onkeydown=e=>{ if(e.key==="Enter"){e.preventDefault();done(inp.value);} else if(e.key==="Escape") done(null); };
+    ov.onclick=e=>{ if(e.target===ov) done(null); };
+    ov.appendChild(bx); document.body.appendChild(ov); setTimeout(()=>{inp.focus();inp.select();},50);
+  });
+}
+function askChoice(title, options, def){
+  return new Promise(res=>{
+    const ov=document.createElement("div"); ov.className="modal-overlay";
+    const bx=document.createElement("div"); bx.className="modal-box"; bx.style.maxWidth="420px";
+    const h=document.createElement("div"); h.style.cssText="font-size:14px;margin-bottom:12px;"; h.textContent=title; bx.appendChild(h);
+    const done=v=>{ov.remove();res(v);};
+    options.forEach(([k,label])=>{
+      const b=document.createElement("button"); b.className="btn "+(k===def?"btn-gold":"btn-ghost"); b.style.marginBottom="8px"; b.textContent=label; b.onclick=()=>done(k); bx.appendChild(b);
+    });
+    const c=document.createElement("button"); c.className="btn btn-ghost"; c.textContent="Hủy"; c.onclick=()=>done(null); bx.appendChild(c);
+    ov.onclick=e=>{ if(e.target===ov) done(null); };
+    ov.appendChild(bx); document.body.appendChild(ov);
   });
 }
 
@@ -3475,7 +3512,7 @@ async function scanScenesForChapter(chapterNumber){
 $ID("rescanScenesBtn").addEventListener("click", async ()=>{
   if(!state.chapters.length){ setStatus("Chưa có chương.", false); return; }
   if(!state.mature){ setStatus("Bật 'Cho phép trưởng thành' trước.", false); return; }
-  const ok = await showConfirm("Quét lại toàn bộ " + state.chapters.length + " chương để tìm cảnh 18+?\n\nSẽ tốn token.","{okText:Bắt đầu}");
+  const ok = await showConfirm("Quét lại toàn bộ " + state.chapters.length + " chương để tìm cảnh 18+?\n\nSẽ tốn token.",{okText:"Bắt đầu"});
   if(!ok) return;
   setStatus("Đang quét scene...", true);
   state.scenes = [];
@@ -3988,7 +4025,7 @@ function showVersionsModal(){
     btn.addEventListener("click", ()=>{
       const vi = parseInt(btn.getAttribute("data-ver-view"),10);
       const v = versions[vi]; if(!v) return;
-      alert("=== Bản "+(vi+1)+" ===\n\n" + v.text.slice(0, 3000) + (v.text.length > 3000 ? "\n\n...(còn)" : ""));
+      showAlert("=== Bản "+(vi+1)+" ===\n\n" + v.text.slice(0, 3000) + (v.text.length > 3000 ? "\n\n...(còn)" : ""));
     });
   });
   box.querySelectorAll("[data-ver-restore]").forEach(btn=>{
@@ -4203,7 +4240,7 @@ $ID("saveKeyBtn").addEventListener("click", async ()=>{
     const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + state.apiKey };
     if(isOpenRouter){
       headers["HTTP-Referer"] = location.protocol === "file:" ? "https://localhost" : location.origin;
-      headers["X-Title"] = "Xuong Truyen AI Pro Max v10";
+      headers["X-Title"] = "Xuong Truyen AI Pro Max v12.24";
     }
     // Lightweight probe: request 1 token
     const body = {
@@ -4903,9 +4940,9 @@ function openCharDedupe(){
       if(!Array.isArray(state.ignoredDupPairs)) state.ignoredDupPairs = [];
       state.ignoredDupPairs.push(b.getAttribute("data-cd-keep")); persist(); renderCharacters(); draw();
     });
-    box.querySelectorAll("[data-cd-del]").forEach(b=>b.onclick = ()=>{
+    box.querySelectorAll("[data-cd-del]").forEach(b=>b.onclick = async ()=>{
       const sg = byKey(b.getAttribute("data-cd-del")); if(!sg) return;
-      if(!confirm("Xóa mục “" + sg.sourceName + "”? (Có thể hoàn tác đến khi tải lại trang)")) return;
+      if(!await showConfirm("Xóa mục “" + sg.sourceName + "”? (Có thể hoàn tác đến khi tải lại trang)")) return;
       snapshotForCharUndo("xóa “" + sg.sourceName + "”");
       state.characters = state.characters.filter(c=>c.id!==sg.sourceId);
       persist(); renderCharacters(); draw();
@@ -6420,15 +6457,15 @@ function ensureUpgradePanel(){
       <button class="btn btn-purple" id="auditTextV102">🔎 Quét lặp / cấm từ</button>
       <button class="btn btn-ghost" id="wakeLockV102">🔆 Wake Lock: Bật</button>
     </div>
-    <div class="field"><label>Glossary Lock — xưng hô cố định</label><textarea id="glossaryV102" rows="2" placeholder="Ví dụ: Ta - Ngươi\\nHuynh - Muội"></textarea></div>
+    <div class="field"><label>Glossary Lock — xưng hô cố định</label><textarea id="glossaryV102" rows="2" placeholder="Ví dụ: Ta - Ngươi\nHuynh - Muội"></textarea></div>
     <div id="auditResultV102" class="hint"></div>
   </div>`;
   stack.appendChild(sec);
   sec.querySelector("[data-toggle]").addEventListener("click",()=>sec.classList.toggle("open"));
-  $ID("banWordsV102").value=(state.banWords||[]).join("\\n");
-  $ID("glossaryV102").value=(state.glossaryLock||[]).join("\\n");
-  $ID("banWordsV102").addEventListener("input",()=>{state.banWords=$ID("banWordsV102").value.split(/\\n|,/).map(x=>x.trim()).filter(Boolean);persist();});
-  $ID("glossaryV102").addEventListener("input",()=>{state.glossaryLock=$ID("glossaryV102").value.split(/\\n/).map(x=>x.trim()).filter(Boolean);persist();});
+  $ID("banWordsV102").value=(state.banWords||[]).join("\n");
+  $ID("glossaryV102").value=(state.glossaryLock||[]).join("\n");
+  $ID("banWordsV102").addEventListener("input",()=>{state.banWords=$ID("banWordsV102").value.split(/\n|,/).map(x=>x.trim()).filter(Boolean);persist();});
+  $ID("glossaryV102").addEventListener("input",()=>{state.glossaryLock=$ID("glossaryV102").value.split(/\n/).map(x=>x.trim()).filter(Boolean);persist();});
   $ID("exportBackupV102").addEventListener("click",exportFullBackupV102);
   $ID("cleanTextV102").addEventListener("click",cleanCurrentChapterTextV102);
   $ID("auditTextV102").addEventListener("click",()=>{ auditCurrentChapterV102(); highlightAuditMatchesV102(); });
@@ -6456,7 +6493,7 @@ function estimateCurrentPromptV102(){
     const c=state.chapters[state.currentChapterIndex];
     const context=buildContextBlock();
     const directive=state.directive||"";
-    const tokens=estimateTokens(context+"\\n"+directive);
+    const tokens=estimateTokens(context+"\n"+directive);
     const out=Math.min(6000,Math.max(500,Number(state.minChapterWords)||5000))*1.15;
     const p=priceForModel(state.model);
     const cost=(tokens/1000000)*p.in+(out/1000000)*p.out;
@@ -6478,13 +6515,12 @@ function exportFullBackupV102(){
   setStatus("Đã xuất backup JSON.","saved");
 }
 function cleanVietnameseTextV102(text){
-  return String(text||"").replace(/[\\u00A0\\t]+/g," ")
-    .replace(/[ ]{2,}/g," ")
-    .replace(/\\n{3,}/g,"\\n\\n")
-    .replace(/[“”]/g,'"')
-    .replace(/\\s+([,.;:!?…])/g,"$1")
-    .replace(/([,.;:!?…])([A-Za-zÀ-ỹ])/g,"$1 $2")
-    .replace(/(^|\\n)\\s*([a-zà-ỹ])/g,(m,p,c)=>p+c.toUpperCase())
+  return String(text||"").replace(/\u00A0/g," ")
+    .replace(/[ \t]{2,}/g," ")
+    .replace(/[ \t]+\n/g,"\n")
+    .replace(/\n{3,}/g,"\n\n")
+    .replace(/[ \t]+([,.;:!?…])/g,"$1")
+    .replace(/([,;:!?…])(?=\p{L})/gu,"$1 ")
     .trim();
 }
 function cleanCurrentChapterTextV102(){
@@ -6500,7 +6536,7 @@ function auditCurrentChapterV102(){
   const idx=state.currentChapterIndex, c=state.chapters[idx]; if(!c) return;
   const text=c.text||"", lower=text.toLocaleLowerCase("vi");
   const banned=(state.banWords||[]).filter(w=>w && lower.includes(w.toLocaleLowerCase("vi")));
-  const words=lower.normalize("NFC").match(/[\\p{L}\\p{N}']+/gu)||[];
+  const words=lower.normalize("NFC").match(/[\p{L}\p{N}']+/gu)||[];
   const freq={}; words.forEach(w=>freq[w]=(freq[w]||0)+1);
   const repeats=Object.entries(freq).filter(([w,n])=>n>=4&&w.length>=4).sort((a,b)=>b[1]-a[1]).slice(0,12);
   const el=$ID("auditResultV102"); if(!el)return;
@@ -6871,7 +6907,7 @@ async function reviewCurrentChapter(){
     if(gate.stopped){ ch.status=wasSynced?"MODIFIED_AFTER_SYNC":"REVISION_REQUIRED"; persist(); renderChapterNav(); renderCurrentChapter(); setStatus("Đã dừng duyệt lại.",false); return; }
     if(!gate.approved){
       const why=gate.error?("Không đọc được kết quả review ("+gate.error+")"):("Quality Gate: "+((ch.review&&ch.review.verdict)||"chưa đạt"));
-      if(!confirm(why+".\nVẫn duyệt thủ công chương "+n+" và đồng bộ vào Canon?")){
+      if(!await showConfirm(why+".\nVẫn duyệt thủ công chương "+n+" và đồng bộ vào Canon?")){
         ch.status=wasSynced?"MODIFIED_AFTER_SYNC":"REVISION_REQUIRED";
         persist(); renderChapterNav(); renderCurrentChapter();
         setStatus("Chương "+n+" chưa được duyệt. Sửa theo hướng dẫn trong khung Quality rồi bấm 🔍 Duyệt lại.",false);
@@ -6881,7 +6917,7 @@ async function reviewCurrentChapter(){
       ch.status="APPROVED";
     }
     let doSync=isLast;
-    if(isLast && wasSynced) doSync=confirm("Chương "+n+" đã từng Sync. Chạy lại cập nhật Canon (tóm tắt, NV, thế giới, status, memory) theo bản đã sửa?\n(Hủy = chỉ đánh dấu đã duyệt, giữ nguyên Canon cũ.)");
+    if(isLast && wasSynced) doSync=await showConfirm("Chương "+n+" đã từng Sync. Chạy lại cập nhật Canon (tóm tắt, NV, thế giới, status, memory) theo bản đã sửa?\n(Hủy = chỉ đánh dấu đã duyệt, giữ nguyên Canon cũ.)");
     if(doSync){
       persist(); renderChapterNav(); renderCurrentChapter();
       await runCanonPostProcess(ch,n,ch.text,ch.text);
@@ -6914,7 +6950,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
     (state.characters && state.characters.length>0) ||
     (state.mainCharProfile && state.mainCharProfile.name && state.mainCharProfile.name.trim())
   )){
-    const ok = confirm("Truyện này chưa có chương nào trong bộ nhớ hiện tại, nhưng lại đã có nhân vật/cốt truyện — có thể do vừa Lên JSON chưa tải kịp hoặc mở nhầm truyện.\n\nBấm OK để VẪN viết Chương 1 (nếu bạn chắc đây đúng là truyện mới).\nBấm Hủy để dừng lại và kiểm tra trước.");
+    const ok = await showConfirm("Truyện này chưa có chương nào trong bộ nhớ hiện tại, nhưng lại đã có nhân vật/cốt truyện — có thể do vừa Lên JSON chưa tải kịp hoặc mở nhầm truyện.\n\nBấm OK để VẪN viết Chương 1 (nếu bạn chắc đây đúng là truyện mới).\nBấm Hủy để dừng lại và kiểm tra trước.");
     if(!ok){ return; }
   }
   const basePick = pickWritingModel(!!forceNsfw);
@@ -7554,7 +7590,7 @@ function wipeChapterMemoryAfterMerge(mergedNum){
 $ID("insertChapterBtn").addEventListener("click", async ()=>{
   const idx = state.currentChapterIndex;
   if(idx < 0){ setStatus("Chưa có chương.", false); return; }
-  const title = prompt("Tiêu đề chương mới (chèn sau chương "+(idx+1)+"):", "Chương chèn");
+  const title = await askText("Tiêu đề chương mới (chèn sau chương "+(idx+1)+")", "Chương chèn");
   if(title == null) return;
   const newChapter = {
     title: title.trim() || "Chương chèn", text: "", wordCount: 0, truncated: false,
@@ -7628,17 +7664,7 @@ $ID("splitScenesBtn").addEventListener("click", async ()=>{
 });
 
 async function rewriteScene(chapterIdx, sceneIdx, sceneText, overlay){
-  const instruction = prompt(
-    "Viết lại cảnh này theo hướng nào?\n\n" +
-    "1 = Tăng miêu tả (ngoại hình, không khí, giác quan)\n" +
-    "2 = Viết lại tự nhiên hơn (giảm mùi AI)\n" +
-    "3 = Tăng 18+ (nếu có cảnh nóng)\n" +
-    "4 = Tăng kịch tính / căng thẳng\n" +
-    "5 = Mở rộng chi tiết\n" +
-    "6 = Rút gọn\n" +
-    "7 = Đào sâu nội tâm\n",
-    "1"
-  );
+  const instruction = await askChoice("Viết lại cảnh này theo hướng nào?", [["1","Tăng miêu tả"],["2","Tự nhiên hơn (giảm mùi AI)"],["3","Tăng 18+"],["4","Tăng kịch tính"],["5","Mở rộng chi tiết"],["6","Rút gọn"],["7","Đào sâu nội tâm"]], "1");
   if(instruction == null) return;
   const map = {
     "1": "Viết lại cảnh này, TĂNG CƯỜNG MIÊU TẢ ngoại hình, không khí, chi tiết giác quan (mùi, ánh sáng, âm thanh, nhiệt độ). Giữ nguyên sự kiện.",
@@ -7685,27 +7711,29 @@ async function rewriteScene(chapterIdx, sceneIdx, sceneText, overlay){
   }catch(err){ setStatus("Lỗi: " + err.message, false); }
 }
 /* ========== REWRITE SELECTION (floating) ========== */
-document.addEventListener("mouseup", (e)=>{
-  if(!chapterTextEl.contains(e.target)){ floatingRewrite.style.display = "none"; return; }
+function updateFloatingRewrite(){
   const sel = window.getSelection();
-  if(!sel || sel.rangeCount === 0 || sel.isCollapsed){ floatingRewrite.style.display = "none"; return; }
+  const hide = ()=>{ if(Date.now() < (floatingRewrite._pressUntil||0)) return; floatingRewrite.style.display = "none"; };
+  if(!sel || sel.rangeCount === 0 || sel.isCollapsed || !chapterTextEl.contains(sel.anchorNode)) return hide();
   const text = sel.toString().trim();
-  if(text.length < 10){ floatingRewrite.style.display = "none"; return; }
+  if(text.length < 10) return hide();
   const rect = sel.getRangeAt(0).getBoundingClientRect();
-  floatingRewrite.style.left = Math.max(6, rect.left + window.scrollX) + "px";
-  floatingRewrite.style.top = Math.max(6, rect.top + window.scrollY - 40) + "px";
   floatingRewrite.style.display = "block";
+  const left = Math.min(Math.max(8, rect.left), window.innerWidth - (floatingRewrite.offsetWidth||150) - 8);
+  let top = rect.bottom + 14; if(top > window.innerHeight - 70) top = Math.max(8, rect.top - 52);
+  floatingRewrite.style.left = left + "px"; floatingRewrite.style.top = top + "px";
   floatingRewrite._selectedText = text;
-});
+}
+let _selTimer = null;
+document.addEventListener("selectionchange", ()=>{ clearTimeout(_selTimer); _selTimer = setTimeout(updateFloatingRewrite, 250); });
+document.addEventListener("mouseup", ()=>setTimeout(updateFloatingRewrite, 0));
+floatingRewrite.addEventListener("touchstart", ()=>{ floatingRewrite._pressUntil = Date.now() + 1500; }, {passive:true});
 floatingRewrite.addEventListener("mousedown", e=>e.preventDefault());
 floatingRewrite.addEventListener("click", async ()=>{
   const selText = floatingRewrite._selectedText;
   if(!selText){ floatingRewrite.style.display = "none"; return; }
   floatingRewrite.style.display = "none";
-  const mode = prompt(
-    "1 = văn phong tự nhiên\n2 = chính tả\n3 = tâm lý\n4 = miêu tả (tăng cường)\n5 = world\n6 = kịch tính\n7 = rút ngắn\n8 = mở rộng\n9 = 18+ nóng\n\nNhập số:",
-    "4"
-  );
+  const mode = await askChoice("Viết lại đoạn đã chọn theo hướng nào?", [["1","Văn phong tự nhiên"],["2","Sửa chính tả"],["3","Đào sâu tâm lý"],["4","Tăng miêu tả"],["5","Thêm world-building"],["6","Tăng kịch tính"],["7","Rút ngắn"],["8","Mở rộng"],["9","18+ nóng"]], "4");
   if(mode == null) return;
   const modes = {
     "1": "Viết lại đoạn này với văn phong tự nhiên như người viết thật: nhịp câu đa dạng, giảm mùi AI, ưu tiên giác quan và hành động.",
@@ -7782,7 +7810,8 @@ function downloadJson(){
     downloaded = true;
   }catch(e){ console.warn("[Export] blob bị chặn:", e); }
 
-  /* Hiện textarea dự phòng */
+  if(downloaded){ state.chaptersSinceBackup = 0; persist(); refreshBackupBanner(); setStatus("Đã tải file backup JSON.", false); return; }
+  /* Hiện textarea dự phòng (chỉ khi tải thất bại) */
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const box = document.createElement("div");
@@ -7910,7 +7939,7 @@ $ID("exportDocBtn").addEventListener("click", ()=>{
 
 /* ========== PROMPT PREVIEW ========== */
 $ID("promptPreviewBtn").addEventListener("click", ()=>{
-  if(!lastPromptSent){ alert("Chưa có prompt nào được gửi."); return; }
+  if(!lastPromptSent){ showAlert("Chưa có prompt nào được gửi."); return; }
   const overlay = document.createElement("div"); overlay.className = "modal-overlay";
   const box = document.createElement("div"); box.className = "modal-box";
   box.innerHTML = '<div class="modal-close" id="ppClose">×</div>'
@@ -7951,8 +7980,8 @@ $ID("costBtn").addEventListener("click", ()=>{
 
 /* ========== HELP ========== */
 $ID("helpBtn").addEventListener("click", ()=>{
-  alert(
-    "XƯỞNG TRUYỆN AI PRO MAX v8 — HƯỚNG DẪN:\n\n" +
+  showAlert(
+    "XƯỞNG TRUYỆN AI PRO MAX v12.24 — HƯỚNG DẪN:\n\n" +
     "🎬 SCENE TRACKER: Tự động phát hiện cảnh 18+ sau mỗi chương. Ghi log ai, làm gì, intensity, structure. Chống lặp cấu trúc.\n\n" +
     "" +
     "📚 VOCABULARY: Từ muốn dùng / tránh + mức độ explicit 5 bậc (nhẹ → cực mạnh).\n\n" +
@@ -8154,7 +8183,7 @@ function loreResetForm(){
 $ID("loreSaveBtn").addEventListener("click", ()=>{
   const name = $ID("loreName").value.trim(), keys = $ID("loreKeys").value.trim(), content = $ID("loreContent").value.trim();
   const always = $ID("loreAlways").checked;
-  if(!name || !content || (!keys && !always)){ alert("Cần Tên, Nội dung và Từ khóa (hoặc bật 'Luôn bật')."); return; }
+  if(!name || !content || (!keys && !always)){ showAlert("Cần Tên, Nội dung và Từ khóa (hoặc bật 'Luôn bật')."); return; }
   const data = { name, keys, content, always, priority: Math.min(100, Math.max(1, parseInt($ID("lorePriority").value)||50)) };
   const cur = loreEditId && loreCards().find(c=>c.id===loreEditId);
   if(cur) Object.assign(cur, data); else loreCards().push(Object.assign({ id: genId(), enabled: true }, data));
@@ -8163,14 +8192,14 @@ $ID("loreSaveBtn").addEventListener("click", ()=>{
 $ID("loreCancelBtn").addEventListener("click", loreResetForm);
 $ID("loreSearch").addEventListener("input", renderLore);
 $ID("loreBudget").addEventListener("change", e=>{ state.loreBudgetTokens = Math.min(20000, Math.max(200, parseInt(e.target.value)||2000)); persist(); });
-$ID("loreList").addEventListener("click", e=>{
+$ID("loreList").addEventListener("click", async e=>{
   const b = e.target.closest("[data-act]"); if(!b) return;
   const c = loreCards().find(x=>x.id===b.dataset.id); if(!c) return;
   if(b.dataset.act === "edit"){
     loreEditId = c.id; $ID("loreName").value = c.name||""; $ID("loreKeys").value = c.keys||""; $ID("loreContent").value = c.content||"";
     $ID("lorePriority").value = c.priority||50; $ID("loreAlways").checked = !!c.always; $ID("loreSaveBtn").textContent = "💾 Cập nhật thẻ";
   } else if(b.dataset.act === "del"){
-    if(!confirm("Xóa thẻ \"" + (c.name||"?") + "\"?")) return;
+    if(!await showConfirm("Xóa thẻ \"" + (c.name||"?") + "\"?")) return;
     state.lorebook = loreCards().filter(x=>x.id!==c.id); persist(); renderLore();
   }
 });
@@ -8198,8 +8227,8 @@ $ID("loreImportFile").addEventListener("change", async e=>{
       const ex = loreCards().find(c=> c.id === n.id || normalizeName(c.name) === normalizeName(n.name));
       if(ex){ Object.assign(ex, n, { id: ex.id }); upd++; } else { loreCards().push(n); add++; }
     });
-    persist(); renderLore(); alert("Import xong: thêm " + add + ", cập nhật " + upd + " thẻ.");
-  }catch(err){ alert("File Lorebook không hợp lệ: " + err.message); }
+    persist(); renderLore(); showAlert("Import xong: thêm " + add + ", cập nhật " + upd + " thẻ.");
+  }catch(err){ showAlert("File Lorebook không hợp lệ: " + err.message); }
 });
 
 /* v10.1: tab 2 cột + tắt tác vụ nền không cần cho việc viết */
@@ -8266,7 +8295,7 @@ async function startBackgroundWrite(){
     (state.characters && state.characters.length>0) ||
     (state.mainCharProfile && state.mainCharProfile.name && state.mainCharProfile.name.trim())
   )){
-    const ok = confirm("Truyện này chưa có chương nào trong bộ nhớ hiện tại, nhưng lại đã có nhân vật/cốt truyện — có thể do vừa Lên JSON chưa tải kịp hoặc mở nhầm truyện.\n\nBấm OK để VẪN gửi job viết Chương 1 (nếu bạn chắc đây đúng là truyện mới).\nBấm Hủy để dừng lại và kiểm tra trước.");
+    const ok = await showConfirm("Truyện này chưa có chương nào trong bộ nhớ hiện tại, nhưng lại đã có nhân vật/cốt truyện — có thể do vừa Lên JSON chưa tải kịp hoặc mở nhầm truyện.\n\nBấm OK để VẪN gửi job viết Chương 1 (nếu bạn chắc đây đúng là truyện mới).\nBấm Hủy để dừng lại và kiểm tra trước.");
     if(!ok){ return; }
   }
   const storyBlob={};
@@ -8543,6 +8572,12 @@ function updateNsfwHint(){
   } else {
     hint += '<br>🚫 Không dùng model NSFW.';
   }
+  if(state.mature){
+    const miss=[]; const mc=state.mainCharProfile;
+    if(mc && mc.name && parseAgeNum(mc.age)===null) miss.push(mc.name);
+    (state.characters||[]).forEach(c=>{ if(c && c.name && !c.dead && parseAgeNum(c.age)===null) miss.push(c.name); });
+    if(miss.length) hint += '<br><span style="color:#e0a83f;">⚠ Chưa ghi tuổi: '+escapeHtml(miss.slice(0,8).join(", "))+(miss.length>8?"…":"")+'. Rào chắn tuổi chỉ có tác dụng khi nhân vật có tuổi.</span>';
+  }
   hintEl.innerHTML = hint;
 }
 function renderDeleteChapterSelect(){
@@ -8647,6 +8682,8 @@ function renderCurrentChapter(){
 }
 
 chapterSearch.addEventListener("input", renderChapterNav);
+
+(function(){const t=document.querySelector(".topbar");if(!t)return;const f=()=>document.documentElement.style.setProperty("--topbar-h",t.offsetHeight+"px");f();addEventListener("resize",f);addEventListener("load",f);})();
 
 /* v11: móc kiểm thử — chỉ bật khi trang được nạp với window.__XTA_TEST__ = true (không ảnh hưởng người dùng thường). */
 if(window.__XTA_TEST__){
