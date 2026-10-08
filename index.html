@@ -3217,7 +3217,7 @@ async function callAI(prompt, opts){
   const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + key };
   if(isOpenRouter){
     headers["HTTP-Referer"] = location.protocol === "file:" ? "https://localhost" : location.origin;
-    headers["X-Title"] = "Xuong Truyen AI Pro Max v12.24";
+    headers["X-Title"] = "Xuong Truyen AI Pro Max v12.25";
   }
 
   let lastErr = null;
@@ -4240,7 +4240,7 @@ $ID("saveKeyBtn").addEventListener("click", async ()=>{
     const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + state.apiKey };
     if(isOpenRouter){
       headers["HTTP-Referer"] = location.protocol === "file:" ? "https://localhost" : location.origin;
-      headers["X-Title"] = "Xuong Truyen AI Pro Max v12.24";
+      headers["X-Title"] = "Xuong Truyen AI Pro Max v12.25";
     }
     // Lightweight probe: request 1 token
     const body = {
@@ -5937,9 +5937,28 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
   ].filter(x=>x!=="" && x!=null).join("\n");
   try{
     // Aion 3.5 Mini là model reasoning: dành đủ ngân sách cho reasoning nhưng khóa FINAL ở khoảng 400–600 từ.
-    const { text: hint } = await callAI(prompt, {maxTokens:(_mo ? 3600 : 2800), temperature:0.55, modelOverride:_mo});
-    let out = hint.trim();
-    if(!out) return "";
+    /* V12.25: model reasoning hay dùng hết token để "nghĩ" -> nội dung cuối rỗng. Thử tối đa 3 lần:
+       lần 1 như cũ; lần 2 tăng token; lần 3 tăng nữa và chuyển sang model chính nếu đang dùng model 18+. */
+    const _tries = [
+      { maxTokens:(_mo ? 3600 : 2800), modelOverride:_mo },
+      { maxTokens:(_mo ? 6000 : 4500), modelOverride:_mo },
+      { maxTokens:6000, modelOverride:undefined }
+    ];
+    let out = "", _lastErr = null;
+    for(let _i = 0; _i < _tries.length && !out; _i++){
+      if(typeof userStopRequested !== "undefined" && userStopRequested) break;
+      try{
+        const r = await callAI(prompt, { maxTokens:_tries[_i].maxTokens, temperature:0.55, modelOverride:_tries[_i].modelOverride });
+        out = String((r && r.text) || "").trim();
+        if(!out) _lastErr = new Error("AI trả nội dung rỗng");
+      }catch(e){
+        if(e && e.userAbort) throw e;
+        _lastErr = e;
+        console.warn("[NextHint] lần " + (_i+1) + " lỗi:", e && e.message);
+        if(e && /^(Chưa cấu hình|Chưa có API key|Chưa nhập model)/.test(e.message||"")) throw e;
+      }
+    }
+    if(!out){ if(_lastErr) throw _lastErr; return ""; }
     // Nếu final content vẫn lẫn tiếng Anh, yêu cầu model viết lại phần FINAL bằng tiếng Việt.
     if(detectNonVietnamese(out)){
       const fixPrompt = [
@@ -5984,7 +6003,7 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
       out = clipped.trim();
     }
     return out;
-  }catch(err){ console.warn("[NextHint]", err.message); return ""; }
+  }catch(err){ console.warn("[NextHint]", err.message); throw err; }
 }
 $ID("regenSummaryBtn").addEventListener("click", async ()=>{
   const idx = state.currentChapterIndex;
@@ -6836,6 +6855,7 @@ async function runCanonPostProcess(chapterObj, cn, text, rawForPolish, briefUsed
           const applied = applyNextChapterHint(cn, hint, briefUsed);
           persist();
           if(applied) setStatus("💡 Đã tạo gợi ý cho chương " + (cn + 1) + " (xem ô Gợi ý).", false);
+          else if(cn >= state.chapters.length) setStatus("💡 Đã có gợi ý chương " + (cn + 1) + " nhưng ô Gợi ý đang có nội dung bạn tự sửa nên giữ nguyên. Bấm nút tạo gợi ý để thay bằng bản AI.", false);
         }else{
           applyNextChapterHint(cn, "", briefUsed);   // xóa gợi ý cũ đã dùng
           persist();
@@ -7340,7 +7360,7 @@ $ID("continueChapterBtn").addEventListener("click", async ()=>{
           const hint = await generateNextChapterHint(chapter.text, chapter.summary, cn);
           if(hint){ state.nextChapterHint = hint; nextChapterHintEl.value = hint; persist(); }
           else { applyNextChapterHint(cn, "", null); persist(); }
-        }catch(e){}
+        }catch(e){ applyNextChapterHint(cn, "", null); persist(); setStatus("⚠ Gợi ý chương " + (cn + 1) + ": không tạo được — " + ((e && e.message) || e) + ". Bấm nút tạo gợi ý để thử lại.", false); }
       }
     }, "nextHint", {serial:true}));
     await Promise.allSettled(postTasks);
