@@ -672,7 +672,7 @@ html{color-scheme:dark}
 <div class="section-head" data-toggle=""><span>2. Chỉ Đạo</span><span class="chev">▾</span></div>
 <div class="section-body">
 <div class="field"><label>Mệnh lệnh chương tới <span class="hint">(brief bắt buộc — AI phải bám đầy đủ)</span></label><textarea id="directive" rows="3"></textarea></div>
-<div class="field"><label>Kiểu gợi ý chương sau <span class="hint">(áp dụng cho gợi ý tự động và nút bên dưới)</span></label><select id="hintStyle"><option value="normal">Bình thường</option><option value="resist">Có chống cự</option><option value="twist">Đảo chiều / bước ngoặt</option><option value="escalate">Leo thang</option><option value="slow">Chậm lại, đào sâu cảm xúc</option></select>
+<div class="field"><label>Kiểu gợi ý chương sau <span class="hint">(áp dụng cho gợi ý tự động và nút bên dưới)</span></label><select id="hintStyle"><option value="auto">Tự động (theo truyện & thiết lập)</option><option value="normal">Bình thường</option><option value="resist">Có chống cự</option><option value="twist">Đảo chiều / bước ngoặt</option><option value="escalate">Leo thang</option><option value="slow">Chậm lại, đào sâu cảm xúc</option></select>
 <label style="margin-top:8px">Độ dài & cách viết gợi ý</label><select id="hintFormat"><option value="detail">Chi tiết (400–600 từ)</option><option value="beats">Gọn theo nhịp + điểm kết chương (150–260 từ)</option></select><button type="button" id="regenHintBtn" style="margin-top:6px">✨ Tạo lại gợi ý chương sau</button>
 <button type="button" id="rewriteHintBtn" style="margin-top:6px" title="Gõ ý tưởng của bạn (ngắn gọn cũng được) vào ô Gợi ý chương sau bên dưới rồi bấm nút này: AI sẽ viết lại thành gợi ý đầy đủ bám đúng ý bạn.">✍️ Viết lại gợi ý theo ý tôi</button>
 <button type="button" id="undoHintBtn" style="margin-top:6px" title="Quay lại nội dung ô Gợi ý trước lần viết lại gần nhất.">↩ Khôi phục</button>
@@ -2853,6 +2853,7 @@ async function loadCurrentStoryIntoState(){
   if(!Array.isArray(state.triggeredCheckpoints)) state.triggeredCheckpoints = [];
   if(!Array.isArray(state.scenes)) state.scenes = [];
   if(typeof state.autoNextChapterHint !== "string") state.autoNextChapterHint = "";
+  if(!state._hintAutoV25){ state.hintStyle = "auto"; state._hintAutoV25 = true; }   /* V12.25: kiểu gợi ý mặc định = Tự động */
   if(!Array.isArray(state.consentLog)) state.consentLog = [];
   if(!state.statusState || typeof state.statusState !== "object") state.statusState = {};
   if(!Array.isArray(state.timeline)) state.timeline = [];
@@ -3214,6 +3215,7 @@ async function callAI(prompt, opts){
   if(streaming) body.stream = true;
 
   const isOpenRouter = /openrouter\.ai/i.test(endpoint);
+  if(opts.reasoningEffort && isOpenRouter) body.reasoning = { effort: opts.reasoningEffort };   /* V12.25: giảm thời gian "nghĩ" của model reasoning */
   const headers = { "Content-Type": "application/json", "Authorization": "Bearer " + key };
   if(isOpenRouter){
     headers["HTTP-Referer"] = location.protocol === "file:" ? "https://localhost" : location.origin;
@@ -3251,6 +3253,7 @@ async function callAI(prompt, opts){
       catch(e){ detail = res.statusText; }
       const err = new Error(String(detail) || ("HTTP " + res.status));
       err.status = res.status;
+      if(res.status === 400 && body.reasoning){ delete body.reasoning; lastErr = err; continue; }   /* model/endpoint không nhận tham số reasoning -> thử lại không có */
       if(AI_RETRYABLE_STATUS.has(res.status) && attempt < AI_MAX_RETRIES){
         lastErr = err;
         const ra = parseFloat(res.headers.get("retry-after"));
@@ -3342,7 +3345,7 @@ let queueRunning = false;
 async function runFastPostTasks(d, extra){
   const safe = (fn) => Promise.resolve().then(()=> fn ? fn() : null).catch(e=>{ console.warn("[post]", e); });
   await Promise.allSettled([
-    safe(async ()=>{ if(d.summary) await d.summary(); if(d.nextHint) await d.nextHint(); }),
+    safe(d.summary), safe(d.nextHint),   /* V12.25: gợi ý không còn chờ tóm tắt xong */
     safe(d.char), safe(d.world), extra
   ]);
   await Promise.allSettled([ safe(d.status), safe(d.memory) ]);
@@ -5886,7 +5889,7 @@ async function generateChapterSummary(text, chapterNumber, silent){
 /* Tự động đề xuất định hướng cho (các) chương SAU chương vừa viết xong.
    Chỉ là gợi ý tham khảo — không ép chương kế phải làm theo ngay,
    người dùng luôn có thể sửa tay trong ô "Gợi ý chương sau". */
-const HINT_STYLES = {"normal": "Diễn tiến tự nhiên, tiếp nối mạch hiện tại.", "resist": "Nhân vật bị khống chế/yếu thế PHẢN KHÁNG rõ rệt trong chương này (hành động chống cự cụ thể); bên kia đáp trả và siết chặt hơn, hệ quả làm quan hệ quyền lực nặng thêm.", "twist": "Có một bước ngoặt/đảo chiều bất ngờ (lộ bí mật, lợi thế đổi bên, kế hoạch bị phá) nhưng vẫn hợp lý với thông tin đã có.", "escalate": "Leo thang: mức độ căng thẳng, rủi ro hoặc mức nóng cao hơn chương trước, có cú chốt gây hồi hộp.", "slow": "Nhịp chậm hơn: đào sâu nội tâm, quan hệ và hệ quả cảm xúc; ít biến cố mới."};
+const HINT_STYLES = {"auto": "TỰ CHỌN hướng phù hợp nhất cho chương sau dựa trên: mạch truyện và đoạn kết chương vừa rồi, thể loại/văn phong, Story bible, arc và dàn ý hiện tại, nhịp độ các chương gần đây (nếu vừa căng thì có thể chậm lại, nếu vừa chậm thì tăng nhịp), và mức 18+ đã cài. Không mặc định cứ \"bình thường\"; không ép bước ngoặt hay leo thang nếu mạch chưa cần.", "normal": "Diễn tiến tự nhiên, tiếp nối mạch hiện tại.", "resist": "Nhân vật bị khống chế/yếu thế PHẢN KHÁNG rõ rệt trong chương này (hành động chống cự cụ thể); bên kia đáp trả và siết chặt hơn, hệ quả làm quan hệ quyền lực nặng thêm.", "twist": "Có một bước ngoặt/đảo chiều bất ngờ (lộ bí mật, lợi thế đổi bên, kế hoạch bị phá) nhưng vẫn hợp lý với thông tin đã có.", "escalate": "Leo thang: mức độ căng thẳng, rủi ro hoặc mức nóng cao hơn chương trước, có cú chốt gây hồi hộp.", "slow": "Nhịp chậm hơn: đào sâu nội tâm, quan hệ và hệ quả cảm xúc; ít biến cố mới."};
 async function generateNextChapterHint(text, summary, chapterNumber, opts){
   if(!text) return "";
   const userIdea = String((opts && opts.userIdea) || "").trim();
@@ -5901,12 +5904,21 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
     .slice(-3)
     .map(f=>"- "+f.description).join("\n");
   const names = (state.characters||[]).filter(c=>!c.dead).slice(0,40).map(c=>c.name).filter(Boolean).join(", ");
-  const styleKey = state.hintStyle || "normal";
+  const styleKey = state.hintStyle || "auto";
   const _mo = adultModelFor(text + "\n" + (summary || "") + (userIdea ? "\n" + userIdea : ""));
   const beats = (state.hintFormat || "detail") === "beats";
   let hLo = beats ? (_mo ? 230 : 150) : (_mo ? 600 : 400), hHi = beats ? (_mo ? 380 : 260) : (_mo ? 850 : 600);
   /* Ý tưởng dài của người dùng: nới trần để không bị nén mất chi tiết. */
   if(userIdea){ const iw = userIdea.split(/\s+/).filter(Boolean).length; hHi = Math.max(hHi, Math.ceil(iw * 1.8)); }
+  /* V12.25: đưa NGỮ CẢNH TRUYỆN (story bible, style, arc, dàn ý, thẻ nhân vật, địa điểm, vật phẩm, 3 tóm tắt gần...) như lúc viết chương.
+     Tạm xóa brief (gợi ý/mệnh lệnh) của chương vừa viết để AI không chép lại gợi ý cũ. */
+  let ctxBlock = "";
+  try{
+    const _kh = state.nextChapterHint, _kd = state.directive;
+    state.nextChapterHint = ""; state.directive = "";
+    try{ ctxBlock = String(buildContextBlock() || ""); }finally{ state.nextChapterHint = _kh; state.directive = _kd; }
+    if(ctxBlock.length > 7000) ctxBlock = ctxBlock.slice(0, 2800) + "\n[...]\n" + ctxBlock.slice(-4000);
+  }catch(_e){ ctxBlock = ""; }
   const prompt = [
     "Bạn vừa đọc xong CHƯƠNG " + chapterNumber + " của một truyện dài kỳ. Hãy viết GỢI Ý CHI TIẾT cho CHƯƠNG " + (chapterNumber+1) + ".",
     userIdea ? ("Ý TƯỞNG CỦA NGƯỜI DÙNG — ƯU TIÊN TUYỆT ĐỐI, cao hơn mọi quy tắc gợi ý khác bên dưới:\n<y_tuong>\n" + userIdea + "\n</y_tuong>\nHãy VIẾT LẠI gợi ý chương sau để triển khai ĐÚNG và ĐẦY ĐỦ ý tưởng này: giữ nguyên mọi chi tiết, thứ tự, nhân vật, địa điểm, đạo cụ, hành động, câu thoại và điểm kết chương mà người dùng đã nêu; chỉ bổ sung những nhịp nối, địa điểm, hệ quả còn thiếu cho liền mạch với đoạn kết chương trước. KHÔNG bỏ ý, KHÔNG đổi ý, KHÔNG thay bằng hướng khác, KHÔNG thêm tuyến mới. Nếu ý tưởng chỉ nêu một phần thì chỉ viết phần đó và dừng ở mốc người dùng ghi.") : "",
@@ -5925,7 +5937,8 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
     _mo ? "NHỊP CẢNH 18+: nếu chương sau có cảnh nóng, gợi ý PHẢI tách 3 phần và dành chỗ cho từng phần — (a) DẪN VÀO: không khí, lời nói/mệnh lệnh, từng bước áp sát và phản ứng đầu tiên; (b) DIỄN BIẾN + cao trào; (c) SAU CẢNH: dư chấn cơ thể, cảm xúc, thoại và hậu quả với quan hệ. Mỗi phần ít nhất 2–3 câu, không dồn hết vào cao trào." : "",
     "HƯỚNG CHƯƠNG SAU: " + (HINT_STYLES[styleKey] || HINT_STYLES.normal),
     names ? ("NHÂN VẬT (dùng đúng tên): " + names) : "",
-    "", "TÓM TẮT CHƯƠNG VỪA VIẾT:", summary || text.slice(-2000),
+    ctxBlock ? ("\n===== THIẾT LẬP & NGỮ CẢNH TRUYỆN (gợi ý PHẢI nhất quán với phần này) =====\n" + ctxBlock + "\n===== HẾT NGỮ CẢNH =====") : "",
+    "", "TÓM TẮT CHƯƠNG VỪA VIẾT:", summary || text.slice(-3500),
     "", "ĐOẠN KẾT CHƯƠNG (để nối mạch):", text.slice(-1500),
     openThreads ? ("\nTHREADS ĐANG MỞ — CHỈ THAM KHẢO NẾU LIÊN QUAN TRỰC TIẾP:\n" + openThreads) : "",
     openForeshadowing ? ("\nFORESHADOWING — CHỈ THAM KHẢO NẾU LIÊN QUAN TRỰC TIẾP:\n" + openForeshadowing) : "",
@@ -5948,7 +5961,9 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
     for(let _i = 0; _i < _tries.length && !out; _i++){
       if(typeof userStopRequested !== "undefined" && userStopRequested) break;
       try{
-        const r = await callAI(prompt, { maxTokens:_tries[_i].maxTokens, temperature:0.55, modelOverride:_tries[_i].modelOverride });
+        const _o = { maxTokens:_tries[_i].maxTokens, temperature:0.55, modelOverride:_tries[_i].modelOverride, reasoningEffort:(_i < 2 ? "low" : undefined) };
+        if(_i === 0 && opts && typeof opts.onPartial === "function"){ _o.streaming = true; _o.onChunk = (d, full)=>{ try{ opts.onPartial(full); }catch(_){} }; }
+        const r = await callAI(prompt, _o);
         out = String((r && r.text) || "").trim();
         if(!out) _lastErr = new Error("AI trả nội dung rỗng");
       }catch(e){
@@ -6817,7 +6832,23 @@ function applyNextChapterHint(cn, hint, briefUsed){
   if(typeof nextChapterHintEl !== "undefined" && nextChapterHintEl) nextChapterHintEl.value = state.nextChapterHint;
   return true;
 }
+/* V12.25: hiện gợi ý DẦN vào ô khi AI đang stream (chỉ đổi ô, chưa lưu state). Dừng nếu bạn đang gõ/sửa ô. */
+let _hintPreviewLast = null;
+function previewNextChapterHint(cn, partial, briefUsed){
+  try{
+    if(cn < state.chapters.length || !partial || typeof nextChapterHintEl === "undefined" || !nextChapterHintEl) return;
+    const cur = String(state.nextChapterHint || "").trim();
+    const used = (briefUsed === null || briefUsed === undefined) ? null : String(briefUsed).trim();
+    if(!(!cur || (used !== null && cur === used))) return;
+    if(document.activeElement === nextChapterHintEl) return;
+    const shown = String(nextChapterHintEl.value || "");
+    if(_hintPreviewLast !== null && shown !== _hintPreviewLast) return;                 // bạn đã sửa ô -> không đè
+    if(_hintPreviewLast === null && shown.trim() !== cur) return;
+    nextChapterHintEl.value = partial; _hintPreviewLast = partial;
+  }catch(_){}
+}
 async function runCanonPostProcess(chapterObj, cn, text, rawForPolish, briefUsed){
+  _hintPreviewLast = null;
     const postTasks = [];
     let polishPromise = Promise.resolve();
     if(state.spellCheckEnabled && rawForPolish){
@@ -6848,7 +6879,7 @@ async function runCanonPostProcess(chapterObj, cn, text, rawForPolish, briefUsed
     postTasks.push(sched(async ()=>{
       if(text){
         let hint = "", errMsg = "";
-        try{ hint = await generateNextChapterHint(text, chapterObj.summary, cn); }
+        try{ hint = await generateNextChapterHint(text, chapterObj.summary, cn, { onPartial:(full)=>previewNextChapterHint(cn, full, briefUsed) }); }
         catch(e){ errMsg = (e && e.message) ? e.message : String(e); }
         if(hint){
           state.autoNextChapterHint = hint;
@@ -8057,7 +8088,7 @@ function hydrateFormFromState(){
   storyBibleLockEl.checked = !!state.storyBibleLocked;
   storyClockEl.value = state.storyClock || "";
   directiveEl.value = state.directive || "";
-  nextChapterHintEl.value = state.nextChapterHint || ""; { const hs=$ID("hintStyle"); if(hs) hs.value = state.hintStyle || "normal"; const hf=$ID("hintFormat"); if(hf) hf.value = state.hintFormat || "detail"; }
+  nextChapterHintEl.value = state.nextChapterHint || ""; { const hs=$ID("hintStyle"); if(hs) hs.value = state.hintStyle || "auto"; const hf=$ID("hintFormat"); if(hf) hf.value = state.hintFormat || "detail"; }
   advancedRulesEl.value = state.advancedRules || DEFAULT_ADVANCED_RULES;
   difficultyEl.value = state.difficulty || "vua";
   matureToggle.checked = !!state.mature;
@@ -8712,7 +8743,7 @@ if(window.__XTA_TEST__){
     persist, persistNow, flushPersist, buildContextBlock, underageNames, ageGuardPrompt,
     writeEmergencyCopy, readEmergencyRecord, serializeStoryRecord, removeStoryFromDisk,
     setIdbPut(fn){ idbPut = fn; }, getIdbPut(){ return idbPut; },
-    newCharacter, newMainCharProfile, renderCharacters
+    newCharacter, newMainCharProfile, renderCharacters, generateNextChapterHint
   };
 }
 })();
