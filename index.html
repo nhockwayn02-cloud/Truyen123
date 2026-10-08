@@ -3188,7 +3188,29 @@ function trackCost(model, inTok, outTok){
   refreshStatBar();
 }
 
+/* V12.25d: đo thời gian từng lượt gọi AI để biết bước nào chậm. Hiện tóm tắt cuối mỗi chương (viết thường). */
+let _callLog = [], _chapterStartAt = 0;
+function _callLabel(prompt){
+  const p = String(prompt || "");
+  const map = [
+    [/Bạn đang viết CHƯƠNG THỨ/i, "Viết chính"], [/VIẾT TIẾP chương/i, "Viết tiếp"], [/CHÈN THÊM DIỄN BIẾN/i, "Chèn diễn biến"],
+    [/ĐỂ CHẠM ĐIỂM KẾT/i, "Chốt kết"], [/kiểm tra tiến độ chương/i, "Kiểm tra điểm kết"], [/GỢI Ý CHI TIẾT cho CHƯƠNG/i, "Gợi ý chương sau"],
+    [/MỞ RỘNG CHƯƠNG/i, "Mở rộng"], [/chấm.*nhiệt|nhiệt độ cảnh/i, "Chấm nhiệt 18+"]
+  ];
+  for(const [re, name] of map) if(re.test(p.slice(0, 1500))) return name;
+  return p.replace(/\s+/g, " ").trim().slice(0, 32) || "AI";
+}
+function _fmtDur(ms){ const s = Math.round(ms/1000); return s >= 60 ? Math.floor(s/60) + "p" + String(s%60).padStart(2,"0") + "s" : s + "s"; }
+function timingSummary(){
+  if(!_callLog.length) return "";
+  const g = {};
+  for(const c of _callLog){ const o = g[c.label] || (g[c.label] = { n:0, ms:0 }); o.n++; o.ms += c.ms; }
+  const parts = Object.entries(g).sort((a,b)=>b[1].ms - a[1].ms).slice(0, 7).map(([k,v])=> k + (v.n>1 ? "×"+v.n : "") + " " + _fmtDur(v.ms));
+  const wall = _chapterStartAt ? _fmtDur(Date.now() - _chapterStartAt) : "?";
+  return "⏱ Tổng " + wall + " | " + parts.join(" · ");
+}
 async function callAI(prompt, opts){
+  const _t0 = Date.now();
   opts = opts || {};
   const endpoint = state.apiEndpoint || apiEndpointInput.value.trim();
   let key = state.apiKey || apiKeyInput.value.trim();
@@ -3322,6 +3344,7 @@ async function callAI(prompt, opts){
       }catch(tcErr){ console.warn("[trackCost]", tcErr); }
     }
     lastResponseRaw = content;
+    try{ _callLog.push({ label:_callLabel(prompt), ms: Date.now() - _t0, chars: content.length, model: String(model||"") }); if(_callLog.length > 80) _callLog.shift(); }catch(_){}
     return { text: content.trim(), finishReason, modelUsed: model };
   }
   throw lastErr || new Error("Không thể gọi API.");
@@ -6976,7 +6999,8 @@ async function runCanonPostProcess(chapterObj, cn, text, rawForPolish, briefUsed
     try{ captureChapterSnapshot(cn); }catch(e){}
     chapterObj.review.status="completed";
     persist(); renderChapterNav(); renderCurrentChapter(); refreshBackupBanner(); refreshStatBar();
-    setStatus("🟢 Chương "+cn+" đã Sync vào Canon v"+chapterObj.canonVersion+(chapterObj.autoUpdateIssues&&chapterObj.autoUpdateIssues.length?" với cảnh báo: "+chapterObj.autoUpdateIssues.join(", "):""), false);
+    { const _ts = timingSummary(); if(_ts) chapterObj.timingNote = _ts;
+      setStatus("🟢 Chương "+cn+" đã Sync vào Canon v"+chapterObj.canonVersion+(chapterObj.autoUpdateIssues&&chapterObj.autoUpdateIssues.length?" với cảnh báo: "+chapterObj.autoUpdateIssues.join(", "):"") + (_ts ? "\n" + _ts : ""), false); }
 }
 
 async function reviewCurrentChapter(){
@@ -7033,6 +7057,7 @@ async function generateChapter(regenIndex, regenMode, forceNsfw){
     setStatus("Cấu hình endpoint + key trước.", false); return;
   }
   const isRegen = typeof regenIndex === "number";
+  _callLog = []; _chapterStartAt = Date.now();
   if(!isRegen && state.chapters.length===0 && (
     (state.mainPlot && state.mainPlot.trim()) ||
     (state.characters && state.characters.length>0) ||
