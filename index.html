@@ -5953,19 +5953,49 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
     /* V12.25: model reasoning hay dùng hết token để "nghĩ" -> nội dung cuối rỗng. Thử tối đa 3 lần:
        lần 1 như cũ; lần 2 tăng token; lần 3 tăng nữa và chuyển sang model chính nếu đang dùng model 18+. */
     const _tries = [
-      { maxTokens:(_mo ? 3600 : 2800), modelOverride:_mo },
-      { maxTokens:(_mo ? 6000 : 4500), modelOverride:_mo },
-      { maxTokens:6000, modelOverride:undefined }
+      { maxTokens:(_mo ? 5500 : 4000), modelOverride:_mo },
+      { maxTokens:(_mo ? 8000 : 6000), modelOverride:_mo },
+      { maxTokens:5000, modelOverride:undefined }
     ];
-    let out = "", _lastErr = null;
+    /* V12.25c: nhận diện gợi ý BỊ CẮT (hết token / ngắt kết nối giữa chừng) để thử lại thay vì lưu nửa chừng. */
+    const _endsOk = (t)=> /[.!?…。]["”'’»)\]*_~]*\s*$/.test(String(t||"").trim());
+    const _isCut = (r, t)=>{
+      const fr = String((r && r.finishReason) || "").toLowerCase();
+      if(fr === "length" || fr === "max_tokens") return true;
+      if(fr === "stop" || fr === "end_turn" || fr === "eos") return false;
+      return !_endsOk(t);
+    };
+    const _trimToSentence = (t)=>{
+      t = String(t||"").trim();
+      const m = [...t.matchAll(/[.!?…]["”'’»)\]*_~]*(?=\s|$)/g)];
+      if(!m.length) return t;
+      const last = m[m.length-1]; const end = last.index + last[0].length;
+      return end > t.length * 0.4 ? t.slice(0, end).trim() : t;
+    };
+    const _wc = (v)=> String(v||"").trim().split(/\s+/).filter(Boolean).length;
+    /* gọi AI cho bước phụ (sửa tiếng Việt / rút gọn): chỉ nhận kết quả đầy đủ, không bị cắt */
+    const _aux = async (promptStr, o)=>{
+      try{
+        const r = await callAI(promptStr, Object.assign({ reasoningEffort:"low" }, o));
+        const t = String((r && r.text) || "").trim();
+        if(!t || _isCut(r, t)) return null;
+        return t;
+      }catch(e){ if(e && e.userAbort) throw e; return null; }
+    };
+    let out = "", _lastErr = null, _partial = "";
     for(let _i = 0; _i < _tries.length && !out; _i++){
       if(typeof userStopRequested !== "undefined" && userStopRequested) break;
       try{
         const _o = { maxTokens:_tries[_i].maxTokens, temperature:0.55, modelOverride:_tries[_i].modelOverride, reasoningEffort:(_i < 2 ? "low" : undefined) };
         if(_i === 0 && opts && typeof opts.onPartial === "function"){ _o.streaming = true; _o.onChunk = (d, full)=>{ try{ opts.onPartial(full); }catch(_){} }; }
         const r = await callAI(prompt, _o);
-        out = String((r && r.text) || "").trim();
-        if(!out) _lastErr = new Error("AI trả nội dung rỗng");
+        const _t = String((r && r.text) || "").trim();
+        if(!_t){ _lastErr = new Error("AI trả nội dung rỗng"); }
+        else if(_isCut(r, _t)){
+          if(_t.length > _partial.length) _partial = _t;
+          _lastErr = new Error("Gợi ý bị cắt giữa chừng (hết giới hạn token hoặc mất kết nối)");
+          console.warn("[NextHint] lần " + (_i+1) + " bị cắt, finish=", r && r.finishReason);
+        } else out = _t;
       }catch(e){
         if(e && e.userAbort) throw e;
         _lastErr = e;
@@ -5973,6 +6003,8 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
         if(e && /^(Chưa cấu hình|Chưa có API key|Chưa nhập model)/.test(e.message||"")) throw e;
       }
     }
+    /* Cả 3 lần đều bị cắt: nếu đã được phần lớn thì cắt gọn ở câu cuối hoàn chỉnh, còn quá ngắn thì báo lỗi. */
+    if(!out && _partial && _wc(_partial) >= Math.floor(hLo * 0.6)) out = _trimToSentence(_partial);
     if(!out){ if(_lastErr) throw _lastErr; return ""; }
     // Nếu final content vẫn lẫn tiếng Anh, yêu cầu model viết lại phần FINAL bằng tiếng Việt.
     if(detectNonVietnamese(out)){
@@ -5983,16 +6015,16 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
         "CHỈ TRẢ VỀ BẢN GỢI Ý CUỐI CÙNG.",
         "\nNỘI DUNG CẦN SỬA:\n" + out
       ].join("\n");
-      try{
-        const fixed = await callAI(fixPrompt + "\n\nĐỘ DÀI: giữ trong khoảng " + hLo + "–" + hHi + " từ, tuyệt đối không vượt " + hHi + " từ." + (beats ? " Giữ dòng cuối bắt đầu bằng \"→ Kết chương ở:\"." : ""), {maxTokens:2400, temperature:0.25, modelOverride:_mo});
-        if(fixed && !detectNonVietnamese(fixed)) out = fixed.trim();
-      }catch(_){}
+      {
+        const fixed = await _aux(fixPrompt + "\n\nĐỘ DÀI: giữ trong khoảng " + hLo + "–" + hHi + " từ, tuyệt đối không vượt " + hHi + " từ." + (beats ? " Giữ dòng cuối bắt đầu bằng \"→ Kết chương ở:\"." : ""), {maxTokens:(_mo ? 4500 : 3000), temperature:0.25, modelOverride:_mo});
+        if(fixed && !detectNonVietnamese(fixed)) out = fixed;
+      }
     }
 
     // Giữ gợi ý ở quy mô vừa phải (theo kiểu đã chọn). Nếu model trả quá dài, yêu cầu nén lại.
     const countHintWords = (value)=>String(value||"").trim().split(/\s+/).filter(Boolean).length;
     let hintWords = countHintWords(out);
-    if(hintWords > hHi){
+    if(hintWords > Math.ceil(hHi * 1.3)){   /* vượt nhiều mới tốn thêm 1 lượt gọi AI để rút gọn; vượt ít thì chỉ cắt ở cuối câu bên dưới */
       const compactPrompt = [
         "RÚT GỌN GỢI Ý CHƯƠNG DƯỚI ĐÂY.",
         "Giữ nguyên nhân vật, sự kiện, địa điểm, trình tự, xung đột và cú chốt.",
@@ -6002,20 +6034,25 @@ async function generateNextChapterHint(text, summary, chapterNumber, opts){
         "CHỈ TRẢ BẢN GỢI Ý CUỐI CÙNG, 100% tiếng Việt có dấu.",
         "\nGỢI Ý CẦN RÚT GỌN:\n" + out
       ].join("\n");
-      try{
-        const compact = await callAI(compactPrompt, {maxTokens:2200, temperature:0.2, modelOverride:_mo});
-        if(compact && !detectNonVietnamese(compact)) out = compact.trim();
-      }catch(_){}
+      {
+        const compact = await _aux(compactPrompt, {maxTokens:(_mo ? 4500 : 3000), temperature:0.2, modelOverride:_mo});
+        if(compact && !detectNonVietnamese(compact) && countHintWords(compact) <= hHi * 1.15) out = compact;
+      }
       hintWords = countHintWords(out);
     }
 
     // Hard cap cuối cùng để không bao giờ lưu một gợi ý quá dài vào state.
-    if(hintWords > hHi){
-      const words = out.split(/\s+/).filter(Boolean);
-      let clipped = words.slice(0,hHi).join(" ");
-      const lastStop = Math.max(clipped.lastIndexOf("."), clipped.lastIndexOf("!"), clipped.lastIndexOf("?"));
-      if(lastStop > Math.floor(clipped.length*0.80)) clipped = clipped.slice(0,lastStop+1);
-      out = clipped.trim();
+    /* V12.25c: chỉ cắt khi vượt rõ (>15%), luôn cắt ở CUỐI CÂU, và giữ dòng "→ Kết chương ở" nếu có (không cắt cứng giữa câu). */
+    if(hintWords > Math.ceil(hHi * 1.15)){
+      let tail = "", body = out;
+      const _ln = out.split("\n");
+      if(_ln.length > 1 && /^\s*→/.test(_ln[_ln.length-1])){ tail = _ln.pop().trim(); body = _ln.join("\n").trim(); }
+      const room = Math.max(40, hHi - countHintWords(tail));
+      const words = body.split(/\s+/).filter(Boolean);
+      if(words.length > room){
+        body = _trimToSentence(words.slice(0, room).join(" "));
+        out = (body + (tail ? "\n" + tail : "")).trim();
+      }
     }
     return out;
   }catch(err){ console.warn("[NextHint]", err.message); throw err; }
